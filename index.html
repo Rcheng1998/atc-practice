@@ -325,24 +325,37 @@
       const voices = speechSynthesis.getVoices() || [];
       preferredVoiceIndices = [];
       
-      // On mobile, prefer system voices that work better
+      // On mobile, prefer a single male English voice for consistency
       if (isMobile && voices.length) {
-        // For iOS, prefer native English voices
+        let maleVoice = null;
+        
+        // For iOS, look for male English voices (Alex is typically male)
         if (isIOS) {
-          const iosVoices = voices.filter(v => 
+          maleVoice = voices.find(v => 
             v.lang.startsWith('en') && 
-            (v.name.includes('Samantha') || v.name.includes('Alex') || v.localService)
+            (v.name.includes('Alex') || (v.localService && !v.name.includes('Samantha')))
           );
-          if (iosVoices.length) {
-            preferredVoiceIndices = iosVoices.map(v => voices.indexOf(v)).slice(0, 3);
+          // Fallback to any English voice if no male found
+          if (!maleVoice) {
+            maleVoice = voices.find(v => v.lang.startsWith('en') && v.localService);
           }
         }
-        // For Android, prefer local voices
+        // For Android, prefer male English voices
         else {
-          const localVoices = voices.filter(v => v.localService && v.lang.startsWith('en'));
-          if (localVoices.length) {
-            preferredVoiceIndices = localVoices.map(v => voices.indexOf(v)).slice(0, 3);
+          maleVoice = voices.find(v => 
+            v.localService && 
+            v.lang.startsWith('en') && 
+            (v.name.toLowerCase().includes('male') || 
+             !v.name.toLowerCase().includes('female'))
+          );
+          // Fallback to any local English voice
+          if (!maleVoice) {
+            maleVoice = voices.find(v => v.localService && v.lang.startsWith('en'));
           }
+        }
+        
+        if (maleVoice) {
+          preferredVoiceIndices = [voices.indexOf(maleVoice)];
         }
       }
       
@@ -817,7 +830,12 @@
         if (reuseLastVoice && typeof lastChosenVoiceIdx === 'number' && lastChosenVoiceIdx >= 0 && voices[lastChosenVoiceIdx]) {
           chosenIdx = lastChosenVoiceIdx;
         } else {
-          if (preferredVoiceIndices && preferredVoiceIndices.length) chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          // On mobile, use the single preferred voice; on desktop, keep random selection
+          if (isMobile && preferredVoiceIndices && preferredVoiceIndices.length) {
+            chosenIdx = preferredVoiceIndices[0]; // Use the single preferred voice
+          } else if (preferredVoiceIndices && preferredVoiceIndices.length) {
+            chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          }
           if (chosenIdx === -1 && voices.length) chosenIdx = Math.floor(Math.random() * Math.min(3, voices.length));
         }
       const utt = new SpeechSynthesisUtterance(speechText);
@@ -1332,7 +1350,12 @@
       const voices = speechSynthesis.getVoices() || [];
       let chosenIdx = -1;
       if (preferredVoiceIndices && preferredVoiceIndices.length) {
-        chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+        // On mobile, use the single preferred voice; on desktop, keep random selection
+        if (isMobile) {
+          chosenIdx = preferredVoiceIndices[0]; // Use the single preferred voice
+        } else {
+          chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+        }
       }
       if (chosenIdx === -1 && voices.length) {
         const fallbackCount = Math.min(3, voices.length);
@@ -1443,7 +1466,12 @@
         const voices = speechSynthesis.getVoices() || [];
         let chosenIdx = -1;
         if (preferredVoiceIndices && preferredVoiceIndices.length) {
-          chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          // On mobile, use the single preferred voice; on desktop, keep random selection
+          if (isMobile) {
+            chosenIdx = preferredVoiceIndices[0]; // Use the single preferred voice
+          } else {
+            chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          }
         }
         if (chosenIdx === -1 && voices.length) {
           const fallbackCount = Math.min(3, voices.length);
@@ -1541,7 +1569,14 @@
         // speak
         const voices = speechSynthesis.getVoices() || [];
         let chosenIdx = -1;
-        if (preferredVoiceIndices && preferredVoiceIndices.length) chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+        if (preferredVoiceIndices && preferredVoiceIndices.length) {
+          // On mobile, use the single preferred voice; on desktop, keep random selection
+          if (isMobile) {
+            chosenIdx = preferredVoiceIndices[0]; // Use the single preferred voice
+          } else {
+            chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          }
+        }
         if (chosenIdx === -1 && voices.length) chosenIdx = Math.floor(Math.random() * Math.min(3, voices.length));
   // speak via shared helper
   speakText(speechText, 'Speaking tower arrival...');
