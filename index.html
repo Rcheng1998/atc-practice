@@ -293,24 +293,75 @@
     const stopBtn = document.getElementById('stopBtn');
     // track current utterance to allow stopping
     let currentUtterance = null;
+    
+    // Mobile browser detection
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    let speechEnabled = false;
+    
+    // iOS requires user interaction to enable speech synthesis
+    function enableSpeechForMobile() {
+      if (!speechEnabled && supportsSpeech()) {
+        try {
+          // Create a silent utterance to "wake up" the speech system on iOS
+          const testUtt = new SpeechSynthesisUtterance('');
+          testUtt.volume = 0;
+          speechSynthesis.speak(testUtt);
+          speechEnabled = true;
+          if (isIOS) {
+            status.textContent = 'Speech enabled for mobile. You can now use voice features.';
+          }
+        } catch(e) {
+          console.warn('Failed to enable mobile speech:', e);
+        }
+      }
+    }
+    
     // helper: does the browser support speech synthesis?
     function supportsSpeech(){ return typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined'; }
     // populate available voices and pick a small set of preferred indices
-    function populateVoices(){
-      try {
-        const voices = speechSynthesis.getVoices() || [];
-        preferredVoiceIndices = [];
-        // fallback: include up to first 3 voices if none matched
-        if (!preferredVoiceIndices.length && voices.length) {
-          preferredVoiceIndices = Array.from({length: Math.min(3, voices.length)}, (_,i)=>i);
+  function populateVoices(){
+    try {
+      const voices = speechSynthesis.getVoices() || [];
+      preferredVoiceIndices = [];
+      
+      // On mobile, prefer system voices that work better
+      if (isMobile && voices.length) {
+        // For iOS, prefer native English voices
+        if (isIOS) {
+          const iosVoices = voices.filter(v => 
+            v.lang.startsWith('en') && 
+            (v.name.includes('Samantha') || v.name.includes('Alex') || v.localService)
+          );
+          if (iosVoices.length) {
+            preferredVoiceIndices = iosVoices.map(v => voices.indexOf(v)).slice(0, 3);
+          }
         }
-        if (supportsSpeech()) status.textContent = 'Ready — press Departure to speak the phrase.';
-      } catch (e) {
-        console.warn('populateVoices failed', e);
+        // For Android, prefer local voices
+        else {
+          const localVoices = voices.filter(v => v.localService && v.lang.startsWith('en'));
+          if (localVoices.length) {
+            preferredVoiceIndices = localVoices.map(v => voices.indexOf(v)).slice(0, 3);
+          }
+        }
       }
+      
+      // fallback: include up to first 3 voices if none matched
+      if (!preferredVoiceIndices.length && voices.length) {
+        preferredVoiceIndices = Array.from({length: Math.min(3, voices.length)}, (_,i)=>i);
+      }
+      
+      if (supportsSpeech()) {
+        if (isMobile && !speechEnabled) {
+          status.textContent = 'Ready — tap any button to enable speech, then use voice features.';
+        } else {
+          status.textContent = 'Ready — press Departure to speak the phrase.';
+        }
+      }
+    } catch (e) {
+      console.warn('populateVoices failed', e);
     }
-
-    // Departure Sequence: generate a table similar to the attached image and show it in the spokenBox
+  }    // Departure Sequence: generate a table similar to the attached image and show it in the spokenBox
     const departureSeqBtn = document.getElementById('departureSeqBtn');
     const arrivalSeqBtn = document.getElementById('arrivalSeqBtn');
     if (departureSeqBtn) {
@@ -719,6 +770,25 @@
   } else {
     status.textContent = 'Speech synthesis not available in this browser.';
   }
+  
+  // Add touch/click listeners for mobile speech activation
+  if (isMobile) {
+    const enableSpeechOnFirstTouch = () => {
+      if (!speechEnabled) {
+        enableSpeechForMobile();
+      }
+    };
+    
+    // Add listeners to all interactive elements
+    document.addEventListener('touchstart', enableSpeechOnFirstTouch, { once: true });
+    document.addEventListener('click', enableSpeechOnFirstTouch, { once: true });
+    
+    // Also add to main buttons
+    const buttons = document.querySelectorAll('button');
+    buttons.forEach(btn => {
+      btn.addEventListener('touchstart', enableSpeechOnFirstTouch, { once: true });
+    });
+  }
 
   // Shared speak helper: speaks the provided speechText and manages currentUtterance/status
   // store the last spoken text and label for retransmit
@@ -731,9 +801,17 @@
   let lastPitch = null;
   let lastVolume = null;
   function speakText(speechText, statusLabel, reuseLastVoice=false){
+    // Enable speech for mobile if not already enabled
+    if (isMobile && !speechEnabled) {
+      enableSpeechForMobile();
+    }
+    
     // remember last spoken text for retransmit
     try { lastSpeechText = String(speechText); lastStatusLabel = statusLabel || ''; } catch(e) { lastSpeechText = ''; lastStatusLabel = ''; }
     try {
+      // Cancel any existing speech first (important for mobile)
+      speechSynthesis.cancel();
+      
       const voices = speechSynthesis.getVoices() || [];
         let chosenIdx = -1;
         if (reuseLastVoice && typeof lastChosenVoiceIdx === 'number' && lastChosenVoiceIdx >= 0 && voices[lastChosenVoiceIdx]) {
@@ -752,16 +830,47 @@
         utt.pitch = lastPitch !== null ? lastPitch : 1.2;
         utt.volume = lastVolume !== null ? lastVolume : parseFloat(volumeEl.value);
       } else {
-        utt.rate = parseFloat(rateEl.value);
-        utt.pitch = 1.2;
-        utt.volume = parseFloat(volumeEl.value);
+        // Mobile browsers often have different rate/pitch limits
+        let rate = parseFloat(rateEl.value);
+        let pitch = 1.2;
+        let volume = parseFloat(volumeEl.value);
+        
+        if (isMobile) {
+          // iOS Safari has more restrictive limits
+          rate = Math.max(0.5, Math.min(2.0, rate));
+          pitch = Math.max(0.5, Math.min(2.0, pitch));
+          volume = Math.max(0, Math.min(1, volume));
+        }
+        
+        utt.rate = rate;
+        utt.pitch = pitch;
+        utt.volume = volume;
         // remember these values for potential retransmit
         try { lastRate = utt.rate; lastPitch = utt.pitch; lastVolume = utt.volume; } catch(e){}
       }
-      utt.onstart = () => { currentUtterance = utt; status.textContent = statusLabel || 'Speaking...'; };
-      utt.onend = () => { currentUtterance = null; status.textContent = 'Finished.'; };
-      utt.onerror = (e) => { console.error('Speech error', e); status.textContent = 'An error occurred during speech.'; };
-      speechSynthesis.speak(utt);
+      utt.onstart = () => { 
+        currentUtterance = utt; 
+        status.textContent = statusLabel || 'Speaking...'; 
+      };
+      utt.onend = () => { 
+        currentUtterance = null; 
+        status.textContent = 'Finished.'; 
+      };
+      utt.onerror = (e) => { 
+        console.error('Speech error', e); 
+        if (isMobile && !speechEnabled) {
+          status.textContent = 'Tap any button to enable speech first.';
+        } else {
+          status.textContent = 'An error occurred during speech.';
+        }
+      };
+      
+      // Mobile Safari sometimes needs a small delay
+      if (isIOS) {
+        setTimeout(() => speechSynthesis.speak(utt), 10);
+      } else {
+        speechSynthesis.speak(utt);
+      }
     } catch (e){ console.error('speakText failed', e); status.textContent = 'An error occurred during speech.'; }
   }
   // retransmit button behavior
