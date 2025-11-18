@@ -1,0 +1,1916 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Text to Speech — Simple</title>
+  <style>
+    html, body {
+      height: 100%;
+      min-height: 100vh;
+    }
+    
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial;
+      /* tighten padding so content sits higher */
+      padding: 8px 8px;
+      width: 100%;
+      max-width: none;
+      margin: 0;
+      /* use the Downloads copy of the image and don't force-cover so it won't be zoomed */
+      background: url('Downloads/aa.jpg') no-repeat center top scroll;
+      background-size: contain;
+      background-color: transparent;
+      position: relative;
+    }
+    main, .content {
+      /* anchor the controls near the top-left of the page */
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      right: 12px;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start; /* everything left-aligned by default */
+      gap: 6px; /* tighter spacing */
+      width: auto;
+      padding-left: 0;
+    }
+    label { display:block; margin-top: 12px; font-weight:600; }
+  textarea { width:100%; min-height:120px; font-size:15px; padding:8px; resize:vertical; user-select:text; }
+  /* Stack controls vertically instead of in a row */
+  .controls { display:flex; flex-direction:column; gap:6px; align-items:flex-start; margin-top:6px; }
+  .controls > * { margin: 2px 0; }
+    .small { font-size:13px; }
+    .big-btn { background: linear-gradient(180deg,#0b74de,#086fc8); color:white; border:none; padding:16px 28px; font-size:18px; border-radius:10px; cursor:pointer; box-shadow:0 6px 18px rgba(11,116,222,0.28); transition:transform .08s ease, box-shadow .12s ease, opacity .12s ease; }
+    .big-btn:hover { transform:translateY(-2px); box-shadow:0 10px 24px rgba(11,116,222,0.28); }
+    .big-btn:active { transform:translateY(0); box-shadow:0 6px 12px rgba(11,116,222,0.22); }
+    @media (max-width:480px) { .big-btn { width:100%; padding:14px 18px; font-size:16px; } }
+  .spoken-box { border:1px solid #ddd; background:linear-gradient(180deg,#fafafa,#fff); padding:12px 14px; border-radius:8px; font-size:15px; color:#111; box-shadow: 0 6px 14px rgba(0,0,0,0.04); cursor:pointer; }
+  .spoken-box.hidden { display:none; }
+  /* Make the spoken box float below the show button and runway, centered */
+  #spokenBox { position: fixed; left: 50%; top: 96px; transform: translateX(-50%); z-index: 10000; max-width: 88vw; width: min(760px, 88vw); }
+  /* Show button and active runway centered in the viewport */
+  /* Show button will live in the left column under Departure; keep default class styling and no fixed positioning */
+  #showTextBtn {
+    position: static;
+    transform: none;
+    left: auto;
+    top: auto;
+    z-index: auto;
+    margin-top: 8px;
+  }
+
+  #activeRunway {
+    display:block;
+    width: -moz-max-content; width: -webkit-max-content; width: max-content;
+    min-width:0; padding:8px 12px; font-weight:600;
+    position: fixed;
+    left: 50%;
+    top: 56px; /* just below the show button */
+    transform: translateX(-50%);
+    z-index: 10005;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+    border-radius: 8px;
+    background: linear-gradient(180deg,#ffffff,#f3f3f3);
+  }
+  /* Make the show button match the spoken-box in size and style */
+  .show-text-btn { font-size:15px; margin-left:8px; padding:12px 14px; border-radius:8px; border:1px solid #ddd; background:linear-gradient(180deg,#fafafa,#fff); box-shadow: 0 6px 14px rgba(0,0,0,0.04); cursor:pointer; }
+  .manufacturer { margin-top:6px; font-size:13px; color:#555; font-style:italic; }
+    footer { margin-top:18px; color:#555; font-size:13px }
+  /* Table used for departure sequence preview */
+  .seq-table { border-collapse: collapse; width: 100%; max-width:900px; }
+  .seq-table th, .seq-table td { border:1px solid #222; padding:6px 8px; font-size:13px; }
+  .seq-table th { background:#f3f3f3; font-weight:700; }
+  .seq-section { margin-top:10px; font-size:13px; }
+  </style>
+  <script>
+    // Fallback guard: provide a safe startGroundPractice wrapper so an old cached inline
+    // onclick won't throw a ReferenceError. Prefer the inline fallback runner if available
+    // (so clicks produce a visual result even before the main script loads).
+    if (typeof window !== 'undefined' && typeof window.startGroundPractice !== 'function') {
+      window.startGroundPractice = function(){
+        try {
+          if (typeof window.startGroundPracticeInline === 'function') return window.startGroundPracticeInline();
+        } catch (e){}
+        // last-resort message (non-blocking)
+        try { document.getElementById('groundDebug') && (document.getElementById('groundDebug').textContent='Not ready'); document.getElementById('status') && (document.getElementById('status').textContent='Ground Practice handler not yet initialized. Reload (Ctrl+F5) to get the latest script.'); } catch(e){}
+      };
+    }
+    // Inline, self-contained Ground Practice fallback that will run even if the main script
+    // hasn't initialized. It performs visual updates and optional simple speech.
+    (function(){
+      let inline_gp_interval = null;
+      let inline_gp_remaining = 0;
+      let inline_gp_counter = 0;
+      function inlineEnsureList(){
+        try {
+          const box = document.getElementById('spokenBox');
+          if (!box) return null;
+          let ol = box.querySelector('#groundPracticeList');
+          if (!ol){
+            box.classList.remove('hidden');
+            box.innerHTML = '';
+            const title = document.createElement('div');
+            title.style.fontWeight = '700';
+            title.style.marginBottom = '8px';
+            title.textContent = 'Ground Practice (inline) — Log';
+            box.appendChild(title);
+            ol = document.createElement('ol');
+            ol.id = 'groundPracticeList';
+            ol.style.maxHeight = '40vh';
+            ol.style.overflow = 'auto';
+            box.appendChild(ol);
+          }
+          return ol;
+        } catch(e){ return null; }
+      }
+      function inlineGenerate(){
+        try {
+          const status = document.getElementById('status');
+          const debug = document.getElementById('groundDebug');
+          // read options (use the DOM inputs if present)
+          const intervalSecEl = document.getElementById('gpIntervalSec');
+          const lengthEl = document.getElementById('gpLength');
+          const departProbEl = document.getElementById('gpDepartProb');
+          const intervalSec = intervalSecEl ? Math.max(1, Number(intervalSecEl.value) || 60) : 60;
+          const sessionLength = lengthEl ? Math.max(1, Math.min(1000, Number(lengthEl.value) || 15)) : 15;
+          const departProb = departProbEl ? Math.max(0, Math.min(100, Number(departProbEl.value) || 50))/100 : 0.5;
+          inline_gp_counter++;
+          const n = inline_gp_counter; // iteration number
+          const ol = inlineEnsureList();
+          if (ol){
+            const li = document.createElement('li');
+            try {
+              // try to include a sample callsign and human-friendly type label if helpers exist
+              let callsignSample = '';
+              let typeLabel = '';
+              if (typeof randomTypeKey === 'function' && typeof randomCallsignForType === 'function') {
+                const tk = randomTypeKey();
+                callsignSample = randomCallsignForType(tk) || '';
+                try { typeLabel = (typeof getTypeForCallsign === 'function' && getTypeForCallsign(callsignSample)) ? getTypeForCallsign(callsignSample) : (typeof getRawTypeKey === 'function' ? getRawTypeKey(callsignSample) : ''); } catch(e){}
+              }
+              li.textContent = `Ground Practice (inline) — transmission ${n}` + (callsignSample ? ` — ${callsignSample}${typeLabel ? ' (' + typeLabel + ')' : ''}` : '');
+            } catch(e) {
+              li.textContent = `Ground Practice (inline) — transmission ${n}`;
+            }
+            ol.appendChild(li);
+            ol.scrollTop = ol.scrollHeight;
+          }
+          if (debug) debug.textContent = 'Running';
+          if (status) status.textContent = `Ground Practice (inline) — ${n} / ${sessionLength}`;
+          // simple TTS if available
+          try {
+            if (typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined'){
+              const u = new SpeechSynthesisUtterance('Ground practice transmission ' + n);
+              window.speechSynthesis.speak(u);
+            }
+          } catch(e){}
+        } catch(e){ console.error('inlineGenerate error', e); }
+      }
+      window.startGroundPracticeInline = function(){
+        try {
+          if (inline_gp_interval) return; // already running
+          // read configured session length and interval
+          const lengthEl = document.getElementById('gpLength');
+          const intervalSecEl = document.getElementById('gpIntervalSec');
+          const sessionLength = lengthEl ? Math.max(1, Math.min(1000, Number(lengthEl.value) || 15)) : 15;
+          const intervalSec = intervalSecEl ? Math.max(1, Number(intervalSecEl.value) || 60) : 60;
+          inline_gp_remaining = sessionLength;
+          inline_gp_counter = 0;
+          inlineGenerate();
+          inline_gp_remaining--;
+          inline_gp_interval = setInterval(() => {
+            if (inline_gp_remaining <= 0){ clearInterval(inline_gp_interval); inline_gp_interval = null; document.getElementById('groundDebug') && (document.getElementById('groundDebug').textContent='Ready'); document.getElementById('status') && (document.getElementById('status').textContent='Ground Practice (inline) finished.'); return; }
+            inlineGenerate(); inline_gp_remaining--; }, Math.max(1000, Math.floor(intervalSec) * 1000));
+        } catch(e){ console.error('startGroundPracticeInline error', e); }
+      };
+      window.stopGroundPracticeInline = function(){ if (inline_gp_interval){ clearInterval(inline_gp_interval); inline_gp_interval = null; document.getElementById('groundDebug') && (document.getElementById('groundDebug').textContent='Ready'); document.getElementById('status') && (document.getElementById('status').textContent='Ground Practice (inline) stopped.'); } };
+    })();
+  </script>
+</head>
+<body>
+<main class="content">
+  
+
+  <!-- Prominent Departure button -->
+    <div style="margin:18px 0; display:flex; flex-direction:column; gap:8px;">
+    <button id="departureBtn" class="big-btn" aria-label="Departure phrase">Departure</button>
+  <button id="arrivalTaxiBtn" class="big-btn" aria-label="Arrival taxi">Arrival Taxi</button>
+  <button id="arrivalBtn" class="big-btn" aria-label="Arrival (tower)">Arrival (Tower)</button>
+  <button id="departureSeqBtn" class="big-btn" aria-label="Departure sequence">Departure Sequence</button>
+    <button id="arrivalSeqBtn" class="big-btn" aria-label="Arrival sequence">Arrival Sequence</button>
+  <button id="groundPracticeBtn" class="big-btn" aria-label="Ground Practice" style="position:relative; z-index:10010;">Ground Practice</button>
+  <button id="arrivalPracticeBtn" class="big-btn" aria-label="Arrival Practice" style="position:relative; z-index:10010;">Arrival Practice</button>
+  <span id="groundDebug" style="margin-left:8px; font-weight:600; color:#2b7;">Ready</span>
+    <div style="margin-top:8px;">
+      <button id="showTextBtn" class="show-text-btn" aria-controls="spokenBox">Show</button>
+      <button id="retransmitBtn" class="show-text-btn" style="margin-left:8px;">Retransmit</button>
+      <button id="callSignListenBtn" class="show-text-btn" style="margin-left:8px;">Callsign Listening</button>
+    </div>
+    
+  <!-- Callsign Listening modal -->
+  <div id="clModal" style="display:none; position:fixed; left:0; right:0; top:0; bottom:0; background:rgba(0,0,0,0.4); z-index:10030; align-items:center; justify-content:center;">
+    <div style="background:white; padding:16px; border-radius:8px; width:min(560px, 96vw); margin: 60px auto; box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+      <h3 style="margin-top:0;">Callsign Listening  Options</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <label class="small">Interval (s) <input id="modal_clIntervalSec" type="number" min="1" max="3600" step="1" value="5" style="width:100px;"></label>
+  <label class="small">Scope <select id="modal_clScope" style="width:180px;"><option value="all">All callsigns</option><option value="list">Visible list</option><option value="civil">Civilian only (no carriers/military)</option><option value="ga">GA / Twins only</option><option value="carriers">Air carriers only</option></select></label>
+        <label class="small">Append to log <input id="modal_clAppend" type="checkbox" checked></label>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="clCancelBtn" class="show-text-btn">Cancel</button>
+        <button id="clConfirmBtn" class="show-text-btn" style="background:linear-gradient(180deg,#0b74de,#086fc8); color:#fff;">Start</button>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <!-- Active Runway (for departure) -->
+  <div style="margin:6px 0 18px 0; width:100%;">
+    <div id="activeRunway" class="spoken-box" title="Active runway for departures" aria-label="Active Runway">RW10L</div>
+  </div>
+
+  <!-- Spoken text preview (click to hide) -->
+  <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+    <div id="spokenBox" class="spoken-box hidden" title="Click to hide" aria-label="Speech text"></div>
+  </div>
+
+  <!-- voice selector removed; random preferred voice will be selected automatically -->
+
+  <div class="controls">
+  <label class="small">Rate <input id="rate" type="range" min="0.5" max="3.0" step="0.1" value="0.8"> <span id="rateVal">0.80</span></label>
+    <label class="small">Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="1"> <span id="volumeVal">1.00</span></label>
+    <!-- Departure button moved above for a cleaner UI -->
+    <button id="stopBtn">Stop</button>
+  <button id="stopGroundBtn" class="small" style="margin-left:8px;" onclick="(function(){ try{ if (window && typeof window.stopGroundPractice === 'function') window.stopGroundPractice(); if (window && typeof window.stopGroundPracticeInline === 'function') window.stopGroundPracticeInline(); document.getElementById('groundDebug') && (document.getElementById('groundDebug').textContent='Ready'); document.getElementById('status') && (document.getElementById('status').textContent='Ground Practice stopped (inline)'); }catch(e){} })();">Stop Ground Practice</button>
+  
+  <!-- Ground Practice options are shown in a modal on-demand -->
+  </div>
+
+  <!-- Ground Practice modal (hidden until requested) -->
+  <div id="gpModal" style="display:none; position:fixed; left:0; right:0; top:0; bottom:0; background:rgba(0,0,0,0.4); z-index:10020; align-items:center; justify-content:center;">
+    <div style="background:white; padding:16px; border-radius:8px; width:min(520px, 94vw); margin: 60px auto; box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+      <h3 style="margin-top:0;">Ground Practice — Options</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <label class="small">Interval (s) <input id="modal_gpIntervalSec" type="number" min="1" max="3600" step="1" value="60" style="width:100px;"></label>
+        <label class="small">Length <input id="modal_gpLength" type="number" min="1" max="1000" step="1" value="15" style="width:100px;"></label>
+        <label class="small">Departure % <input id="modal_gpDepartProb" type="number" min="0" max="100" step="1" value="50" style="width:100px;"></label>
+        <label class="small">Traffic mix <select id="modal_gpTrafficMix" style="width:140px;"><option value="mostly_ga">Mostly GA/Twins</option><option value="mixed" selected>Mixed</option><option value="mostly_carriers">Mostly Air Carriers</option></select></label>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="gpCancelBtn" class="show-text-btn">Cancel</button>
+        <button id="gpConfirmBtn" class="show-text-btn" style="background:linear-gradient(180deg,#0b74de,#086fc8); color:#fff;">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrival Practice modal (hidden until requested) -->
+  <div id="apModal" style="display:none; position:fixed; left:0; right:0; top:0; bottom:0; background:rgba(0,0,0,0.4); z-index:10025; align-items:center; justify-content:center;">
+    <div style="background:white; padding:16px; border-radius:8px; width:min(520px, 94vw); margin: 60px auto; box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+      <h3 style="margin-top:0;">Arrival Practice — Options</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <label class="small">Interval (s) <input id="modal_apIntervalSec" type="number" min="1" max="3600" step="1" value="60" style="width:100px;"></label>
+        <label class="small">Length <input id="modal_apLength" type="number" min="1" max="1000" step="1" value="15" style="width:100px;"></label>
+        <label class="small">Traffic mix <select id="modal_apTrafficMix" style="width:140px;"><option value="mostly_ga">Mostly GA/Twins</option><option value="mixed" selected>Mixed</option><option value="mostly_carriers">Mostly Air Carriers</option></select></label>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="apCancelBtn" class="show-text-btn">Cancel</button>
+        <button id="apConfirmBtn" class="show-text-btn" style="background:linear-gradient(180deg,#0b74de,#086fc8); color:#fff;">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="small" aria-live="polite" style="margin-top:12px;color:#333"></div>
+
+  
+</main>
+
+  <script>
+    const status = document.getElementById('status');
+    const departureBtn = document.getElementById('departureBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    // track current utterance to allow stopping
+    let currentUtterance = null;
+    // helper: does the browser support speech synthesis?
+    function supportsSpeech(){ return typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined'; }
+    // populate available voices and pick a small set of preferred indices
+    function populateVoices(){
+      try {
+        const voices = speechSynthesis.getVoices() || [];
+        preferredVoiceIndices = [];
+        // fallback: include up to first 3 voices if none matched
+        if (!preferredVoiceIndices.length && voices.length) {
+          preferredVoiceIndices = Array.from({length: Math.min(3, voices.length)}, (_,i)=>i);
+        }
+        if (supportsSpeech()) status.textContent = 'Ready — press Departure to speak the phrase.';
+      } catch (e) {
+        console.warn('populateVoices failed', e);
+      }
+    }
+
+    // Departure Sequence: generate a table similar to the attached image and show it in the spokenBox
+    const departureSeqBtn = document.getElementById('departureSeqBtn');
+    const arrivalSeqBtn = document.getElementById('arrivalSeqBtn');
+    if (departureSeqBtn) {
+      departureSeqBtn.addEventListener('click', () => {
+        // build 3-5 row scenario using random callsigns and types
+        const rows = [];
+  const rowCount = 3 + Math.floor(Math.random()*2); // 3 or 4
+        // pick one base runway for the entire sequence (weighted logic)
+        const baseRunway = randomRunway(true);
+        const baseNum = runwayBase(baseRunway);
+          for (let i=0;i<rowCount;i++){
+          const typeKey = randomTypeKey();
+          const callsign = randomCallsignForType(typeKey);
+          const rawType = getRawTypeKey(callsign);
+          const type = getTypeForCallsign(callsign) || rawType;
+          const sw = getSrsWake(rawType);
+          const srsCat = (i===0 && sw.srsCat!=='I') ? 'I' : sw.srsCat;
+          const wake = sw.wake;
+          // choose a side variant for this row while preserving the numeric base
+          const sides = RUNWAY_SIDES[baseNum] || [''];
+          const side = sides[Math.floor(Math.random()*sides.length)];
+          const runway = 'RW' + baseNum + (side ? side : '');
+          // intersection-departure chance for small-engine types (25%) — inline after location
+          const isSmallEngine = rawType && SMALL_ENGINE_TYPES.includes(rawType);
+          const requestIntersection = isSmallEngine && (Math.random() < SEQ_INTERSECTION_PROB);
+          const locationDisplay = requestIntersection ? (runway + ', Request intersection departure') : runway;
+          const intentions = 'Departure';
+          rows.push({callsign, acid:callsign, type, srsCat, wake, location: locationDisplay, intentions});
+        }
+
+        // create HTML table
+        const table = document.createElement('table');
+        table.className = 'seq-table';
+        const thead = document.createElement('thead');
+        const htr = document.createElement('tr');
+        ['A/C','ACID','TYPE','SRS CAT','WAKE CAT','LOCATION','INTENTIONS'].forEach(h => { const th = document.createElement('th'); th.textContent = h; htr.appendChild(th); });
+        thead.appendChild(htr);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach((r, idx) => {
+          const tr = document.createElement('tr');
+          [r.callsign,r.acid,r.type,r.srsCat,r.wake,r.location,r.intentions].forEach(v => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        // potential applications text
+        const apps = document.createElement('div');
+        apps.className = 'seq-section';
+        apps.innerHTML = '<strong>Potential applications</strong><ul><li>Separation</li><li>Standard runway separation</li><li>Reduced same runway separation</li></ul>';
+
+        // show in spokenBox and make visible
+        if (spokenBox) {
+          spokenBox.innerHTML = '';
+          const title = document.createElement('div');
+          title.style.fontWeight = '700';
+          title.style.marginBottom = '8px';
+          title.textContent = 'Departure Sequence — Scenario';
+          spokenBox.appendChild(title);
+          // 10% chance to append a bonus RW16 row that does not follow the base runway rule
+          if (Math.random() < 0.10) {
+            const bonusTypeKey = randomTypeKey();
+            const bonusCalls = randomCallsignForType(bonusTypeKey);
+            const bonusRawType = getRawTypeKey(bonusCalls);
+            const bonusIsSmall = bonusRawType && SMALL_ENGINE_TYPES.includes(bonusRawType);
+            const bonusIntersection = bonusIsSmall && (Math.random() < SEQ_INTERSECTION_PROB);
+            const bonusRow = document.createElement('tr');
+            const bonusSW = getSrsWake(bonusRawType);
+            [bonusCalls, bonusCalls, getTypeForCallsign(bonusCalls) || bonusRawType, bonusSW.srsCat, bonusSW.wake, (bonusIntersection ? 'RW16, Request intersection departure' : 'RW16'), 'Departure'].forEach(v => { const td = document.createElement('td'); td.textContent = v; bonusRow.appendChild(td); });
+            tbody.appendChild(bonusRow);
+          }
+          spokenBox.appendChild(table);
+          spokenBox.appendChild(apps);
+          spokenBox.classList.remove('hidden');
+        }
+        status.textContent = 'Generated departure sequence.';
+      });
+    }
+
+      // Arrival Sequence: similar to Departure Sequence but with arrival-specific intentions and location wording
+      if (arrivalSeqBtn) {
+        arrivalSeqBtn.addEventListener('click', () => {
+          // build 3-4 row arrival scenario
+          const rows = [];
+          const rowCount = 3 + Math.floor(Math.random()*2); // 3 or 4
+          const baseRunway = randomRunway(true);
+          const baseNum = runwayBase(baseRunway);
+          for (let i=0;i<rowCount;i++){
+            const typeKey = randomTypeKey();
+            const callsign = randomCallsignForType(typeKey);
+            const rawType = getRawTypeKey(callsign);
+            const type = getTypeForCallsign(callsign) || rawType;
+            const sw = getSrsWake(rawType);
+            const srsCat = sw.srsCat;
+            const wake = sw.wake;
+            // choose a side variant while preserving numeric base
+            const sides = RUNWAY_SIDES[baseNum] || [''];
+            const side = sides[Math.floor(Math.random()*sides.length)];
+            const runway = 'RW' + baseNum + (side ? side : '');
+            // Template-driven location generator closely matching bb.pdf phrasing
+            function generateApproachLocation(runway) {
+              const dist = 2 + Math.floor(Math.random()*10); // 2-11 DME
+
+                // Landmarks / local references (examples from bb.pdf)
+                const LANDMARKS = ['Woody','MacDonald Bridge','Owasso Bridge','Riverside Park','Seven Mile Marker','Sandsprings','Ferry Dock'];
+
+                const templates = [
+                // ILS variants
+                () => `ILS approach, CAT I, ${dist} DME, final to ${runway}`,
+                () => `ILS approach, CAT II, ${dist} DME, final to ${runway}`,
+                () => `ILS approach, ${dist} DME, established on the glideslope for ${runway}`,
+                // RNAV variants
+                () => `RNAV (LPV) approach, ${dist} DME, established on final for ${runway}`,
+                () => `RNAV (LNAV) approach, ${dist} DME, final to ${runway}`,
+                () => `RNAV approach, ${dist} DME, RNP 0.3, final to ${runway}`,
+                // Localizer / VOR
+                () => `Localizer approach, ${dist} DME, intercepting localizer, final to ${runway}`,
+                () => `VOR approach, ${dist} DME, established on final for ${runway}`,
+                // Visual / contact
+                () => `Visual straight-in, ${dist} DME, final to ${runway}`,
+                () => `Contact approach, ${dist} DME, final to ${runway}`,
+                  // Landmark / final phrasing from bb.pdf
+                  () => `${choice(LANDMARKS)}, ${2 + Math.floor(Math.random()*5)}-mile final to ${runway}`,
+                  () => `${choice(LANDMARKS)}, ${dist} DME, overhead, descending for ${runway}`,
+                  () => `Crosswind, turning downwind for ${runway}`,
+                // Circling
+                () => `Circling approach, ${dist} DME, circling to land runway ${runway}`,
+                // Vectoring/intercept
+                () => `Vectors to final, intercepting final, ${dist} DME to touchdown on ${runway}`,
+                // Downwind/base
+                () => `Left downwind, ${dist} DME, base leg for ${runway}, turning final`,
+                () => `Right downwind, ${dist} DME, base leg for ${runway}, turning final`,
+                // Established
+                () => `Established on final, ${dist} DME, final to ${runway}`
+              ];
+
+              // Weighted selection: repeat more common templates
+              const weighted = [
+                templates[3], templates[3], templates[0], templates[0], templates[6], templates[8], templates[12], templates[13], templates[11], templates[10], templates[4], templates[5]
+              ];
+              const fn = choice(weighted);
+              return fn();
+            }
+            const locationDisplay = generateApproachLocation(runway);
+            const intentions = (Math.random() < 0.10) ? 'Departure' : 'Arrival';
+            rows.push({callsign, acid:callsign, type, srsCat, wake, location: locationDisplay, intentions});
+          }
+
+          // create HTML table
+          const table = document.createElement('table');
+          table.className = 'seq-table';
+          const thead = document.createElement('thead');
+          const htr = document.createElement('tr');
+          ['A/C','ACID','TYPE','SRS CAT','WAKE CAT','LOCATION','INTENTIONS'].forEach(h => { const th = document.createElement('th'); th.textContent = h; htr.appendChild(th); });
+          thead.appendChild(htr);
+          table.appendChild(thead);
+          const tbody = document.createElement('tbody');
+          rows.forEach((r, idx) => {
+            const tr = document.createElement('tr');
+            [r.callsign,r.acid,r.type,r.srsCat,r.wake,r.location,r.intentions].forEach(v => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+
+          // potential uses
+          const apps = document.createElement('div');
+          apps.className = 'seq-section';
+          apps.innerHTML = '<strong>Potential applications</strong><ul><li>Sequencing practice</li><li>Approach spacing</li><li>Wake turbulence handling</li></ul>';
+
+          // show in spokenBox
+          if (spokenBox) {
+            spokenBox.innerHTML = '';
+            const title = document.createElement('div');
+            title.style.fontWeight = '700';
+            title.style.marginBottom = '8px';
+            title.textContent = 'Arrival Sequence — Scenario';
+            spokenBox.appendChild(title);
+            // 10% chance add an RW16 bonus that doesn't follow base runway
+            if (Math.random() < 0.10) {
+              const bonusTypeKey = randomTypeKey();
+              const bonusCalls = randomCallsignForType(bonusTypeKey);
+              const bonusRawType = getRawTypeKey(bonusCalls);
+              const bonusSW = getSrsWake(bonusRawType);
+              const bonusLoc = generateApproachLocation('RW16');
+              const bonusRow = document.createElement('tr');
+              [bonusCalls, bonusCalls, getTypeForCallsign(bonusCalls) || bonusRawType, bonusSW.srsCat, bonusSW.wake, bonusLoc, 'Arrival'].forEach(v => { const td = document.createElement('td'); td.textContent = v; bonusRow.appendChild(td); });
+              tbody.appendChild(bonusRow);
+            }
+            spokenBox.appendChild(table);
+            spokenBox.appendChild(apps);
+            spokenBox.classList.remove('hidden');
+          }
+          status.textContent = 'Generated arrival sequence.';
+        });
+      }
+  // voiceSelect removed; we'll automatically pick a random preferred voice
+  let preferredVoiceIndices = [];
+  const rateEl = document.getElementById('rate');
+  const volumeEl = document.getElementById('volume');
+  const rateVal = document.getElementById('rateVal');
+  const volumeVal = document.getElementById('volumeVal');
+  // Callsigns grouped by type (sourced from Untitled-1.txt)
+  const CALLSIGNS_BY_TYPE = {
+    AC68: ['N466PF', 'N6080Y','N55BF','N242WB','N227GK','N58DZ','N416BR'],
+    BE20: ['N4132B','N4351V','N617DL','N632SC','N858EF','N887JG','N20WK'],
+    BE36: ['N11452', 'N427VV', 'N63RG', 'N622FG', 'N30450', 'N524AC', 'N801DF', 'N118BZ', 'N425ER', 'N342AB', 'N36BE', 'N288AT', 'N36BE', 'N288AT', 'N111WT', 'N515DF'],
+    BE40: ['N40FD','N40MY','N801MB', 'N911RS','N411CS', 'N40CS', 'N68MY'],
+    BE58: ['N407LY','N42WK','N429W','N56CD','N89TP','N8729B', 'N71GL'],
+    C172: ['N1204W', 'N172PT', 'N3455Y', 'N8689X', 'N690DA', 'N360LT', 'N535KS'],
+    C208: ['N208LT', 'MTN411', 'MTN401', 'IRO525', 'IRO515', 'N7123A', 'N373BD'],
+    C310: ['N1388V','N310DS','N310MN', 'N313SN', 'N366QB', 'N507FS', 'N507FS', 'N411CA'],
+    C421: ['N10SU', 'N605JF', 'N421BC', 'N237RU','N455QT','N422LK','N503LJ'],
+    C550: ['N10JR','N431L', 'N332VS', 'N635PN', 'N118KT', 'N911BT', 'N127PZ'],
+    CL60: ['N1258E','N935TT','N39GC','N6585J','N112BS','N818CS','N858WT'],
+    FA20: ['N735SH','N521SH','N25AB','N37AS','N46NT','N809BZ','N18NC'],
+    GLF3: ['N19CH','N753WS','N322BC','N44LK','N125HD','N923FP','N5843A'],
+    LJ35: ['N102KM','N123JL','N1HD','N455PV','N921RW','N8892G','N123DG'],
+    M20P: ['N20PA','N123NR','N52124','N7634P','N2063W','N444TT','N610RW'],
+    P28A: ['N288DS','N6206F','N355PL','N2991F','N288PM','N7643K','N371CK'],
+    PA31: ['N630LT','N609MA','N85JR','N542AC','N43TP','N122CB','N576TP'],
+    PA34: ['N9726Z','N911KT','N676PS','N157CF','N4359Y','N6297C','N328DG'],
+    PA46: ['N577GL','N422TP','N381RG','N283RW','N771CB','N46PA','N634CL'],
+    PAY3: ['N115SA','N230AX','N39AC','N921FA','N915MP','N51MF','N456AA', 'N783BT'],
+    PC12: ['N12PC','N334LE','N772RP','N582TT','N246ML','N480BE', 'N647WW'],
+    SR22: ['N22SR','N486CC','N731RT','N504SC','N181PP','N204DS', 'N615DL'],
+    H_A300: ['AAL1228','AAL623','AAL1139','AAL302','UPS623','UPS1342'],
+    A320: ['ACA525','ACA751','ACA299','ACA322', 'ACA324','ACA433','ACA117'],
+    H_A340: ['AFR823','AFR113','AFR108','AFR421','AFR426','AFR319','AFR527'],
+    B727: ['FDX62','FDX772','FDX982','FDX294'],
+    B737: ['SWA892','SWA485','SWA162','SWA1287','SWA893','ASA347','ASA517','DAL116','DAL733','DAL937','ASA122','ASA1228'],
+    H_B747: ['UAL492','UAL577','UAL1287','UAL563','KLM693','KLM691','KLM1342','UAL461','AAL1355','AAL763','AAL1057','AAL642','UAL509','AAL388','AAL889','UAL1772','UAL67'],
+    B757: ['AAL715','AAL757','AAL2156','AAL436','DAL1335','UAL23','UAL481','UAL1255','AAL62','AAL519','UAL514'],
+    H_B767: ['UAL802','UAL433','UAL1546','AAL761','AAL463','UAL177','AAL523','UAL388'],
+    H_B777: ['UAL677','BTA439','DAL1285','AAL410','UAL1355','UAL157','AAL62','AAL514','SKW1632'],
+    CRJ: ['BTA2349','BTA411','SKW1008','ENY1124','ENY1259'],
+    DH8: ['PDT334','PDT3224','PDT2233','PDT2232'],
+    H_MD11: ['FDX942','FDX2285','FDX1963'],
+    MD81: ['AAL180','AAL391','DAL802','DAL143','POL2'],
+    B206: ['N4TV','N9TV','POL1','MED1'],
+    B222: ['LFL2','MED2'],
+    F15: ['BUZZ10','BLAZE51','BUZZ3'],
+    F16: ['BLAZE21','COBRA47'],
+    F18: ['COBRA17','RAPTOR1'],
+    F22: ['RAPTOR1'],
+    H_KC10: ['A50433','A90433'],
+    C130: ['SOONR11','SOONR12']
+  };
+
+  // Flattened list for random selection
+  const CALLSIGNS_ALL = Object.values(CALLSIGNS_BY_TYPE).flat();
+
+  function randomCallsign(){ return CALLSIGNS_ALL[Math.floor(Math.random()*CALLSIGNS_ALL.length)]; }
+
+  // Helper: pick a random type key (e.g., 'C172') from CALLSIGNS_BY_TYPE
+  function randomTypeKey(){ const keys = Object.keys(CALLSIGNS_BY_TYPE); return keys[Math.floor(Math.random()*keys.length)]; }
+
+  // Helper: pick a random callsign for a given type key; falls back to global randomCallsign
+  function randomCallsignForType(typeKey){
+    try {
+      const list = CALLSIGNS_BY_TYPE[typeKey];
+      if (Array.isArray(list) && list.length) return list[Math.floor(Math.random()*list.length)];
+    } catch(e){}
+    return randomCallsign();
+  }
+
+  // Weighted type picker for Ground Practice: favor small/twin GA types over big air carriers
+  // We build a weighted array of type keys where small/twin types appear more often.
+  function weightedGroundTypeKey(){
+    const smallOrTwin = new Set([].concat(SMALL_ENGINE_TYPES, TWIN_JET_TYPES));
+    const keys = Object.keys(CALLSIGNS_BY_TYPE);
+    const weighted = [];
+    // read user-selected traffic mix (defaults to 'mixed')
+    let mix = 'mixed';
+    try { const mixEl = document.getElementById('gpTrafficMix'); if (mixEl) mix = mixEl.value; else { const mixHidden = document.getElementById('gpTrafficMix'); if (mixHidden) mix = mixHidden.value; } } catch(e){}
+    for (const k of keys){
+      // base weight
+      let w = 1;
+      // adjust weights according to mix preference
+      if (mix === 'mostly_ga') {
+        if (smallOrTwin.has(k)) w = 8; // stronger preference
+        else if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 0.3;
+        else w = 1;
+      } else if (mix === 'mostly_carriers') {
+        if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 5;
+        else if (smallOrTwin.has(k)) w = 1;
+        else w = 1;
+      } else {
+        // mixed (default)
+        if (smallOrTwin.has(k)) w = 6;
+        else if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 0.6;
+        else w = 1;
+      }
+      // push key w times (round to integer with at least 1)
+      const times = Math.max(1, Math.round(w));
+      for (let i=0;i<times;i++) weighted.push(k);
+    }
+    // fallback
+    if (weighted.length === 0) return randomTypeKey();
+    return weighted[Math.floor(Math.random()*weighted.length)];
+  }
+
+  // NATO phonetic alphabet map
+  const NATO = { A:'Alpha',B:'Bravo',C:'Charlie',D:'Delta',E:'Echo',F:'Foxtrot',G:'Golf',H:'Hotel',I:'India',J:'Juliett',K:'Kilo',L:'Lima',M:'Mike',N:'November',O:'Oscar',P:'Papa',Q:'Quebec',R:'Romeo',S:'Sierra',T:'Tango',U:'Uniform',V:'Victor',W:'Whiskey',X:'Xray',Y:'Yankee',Z:'Zulu' };
+
+  function digitWord(d){ return ['zero','one','two','three','four','five','six','seven','eight','niner'][Number(d)]; }
+
+  // Convert a callsign into a phonetic-friendly spoken string
+  function phoneticCallsign(raw){
+    if (!raw) return '';
+    const s = raw.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    // Special short-code spoken mappings (e.g. BLAZE51 -> 'Blaze fifty one')
+    const SHORTCODE_SPOKEN = {
+      POL: 'Police',
+      MED: 'Medvac',
+      BLAZE: 'Blaze',
+      BUZZ: 'Buzz',
+      COBRA: 'Cobra',
+      RAPTOR: 'Raptor'
+    };
+    // If the callsign begins with a known shortcode, speak that name + the numeric tail
+    try {
+      const keys = Object.keys(SHORTCODE_SPOKEN).sort((a,b)=>b.length-a.length);
+      for (const k of keys){
+        if (s.startsWith(k)){
+          const tail = s.slice(k.length);
+          if (!tail) return SHORTCODE_SPOKEN[k];
+          // if tail is numeric, speak as a flight number (friendly words)
+          if (/^[0-9]+$/.test(tail)) return SHORTCODE_SPOKEN[k] + ' ' + flightNumberSpoken(tail);
+          // otherwise fall back to spelling the remainder
+          const tailSpelled = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+          return SHORTCODE_SPOKEN[k] + ' ' + tailSpelled;
+        }
+      }
+    } catch(e){}
+    // Airline designator spoken names (FAA telephony designators)
+    const AIRLINE = {
+      AAL: 'American', UAL: 'United', SWA: 'Southwest', DAL: 'Delta', FDX: 'FedEx', UPS: 'UPS', ASA: 'Alaska', SKW: 'SkyWest', BTA:'ATA',
+      ACA: 'Air Canada', AFR: 'Air France', KLM: 'KLM', ENY: 'Envoy',
+      IRO: 'Iron Air', PDT: 'Piedmont'
+    };
+
+    function numberToWordsUnder100(n){
+  const small = ['zero','one','two','three','four','five','six','seven','eight','niner','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+      const tens = ['', '','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+      n = Number(n);
+      if (n < 20) return small[n];
+      const t = Math.floor(n/10);
+      const u = n%10;
+      return tens[t] + (u? ' ' + small[u] : '');
+    }
+
+    function flightNumberSpoken(numStr){
+      // remove leading zeros for numeric processing but keep length when deciding
+      const raw = String(numStr);
+      if (raw.length === 1) return digitWord(raw);
+      if (raw.length === 2) return numberToWordsUnder100(Number(raw));
+      if (raw.length === 3) {
+        // e.g. 715 => 'seven fifteen' (first digit, then two-digit number)
+        const first = digitWord(raw[0]);
+        const last = numberToWordsUnder100(Number(raw.slice(1)));
+        return first + ' ' + last;
+      }
+      // 4 or more: speak digits individually
+      return raw.split('').map(d => digitWord(d)).join(' ');
+    }
+
+    // Airline-style callsigns: letters (2-3) followed by digits, e.g., AAL715
+    const m = s.match(/^([A-Z]{2,3})([0-9]+)$/);
+    // US registration starting with N: say 'November' then digits and letters in NATO
+    if (/^N[0-9]/.test(s)){
+      let out = ['November'];
+      for (let i=1;i<s.length;i++){
+        const ch = s[i];
+        if (/[0-9]/.test(ch)) out.push(digitWord(ch));
+        else if (/[A-Z]/.test(ch)) out.push(NATO[ch]||ch);
+        else out.push(ch);
+      }
+      return out.join(' ');
+    }
+    // If it's an airline-style callsign (letters + digits) speak the carrier name when known
+    if (m && !/^N/.test(s)){
+      const design = m[1];
+      const num = m[2];
+      if (AIRLINE[design]){
+        return AIRLINE[design] + ' ' + flightNumberSpoken(num);
+      } else {
+        // fallback: spell the designator in NATO then the flight number
+        const designSpelled = design.split('').map(ch => NATO[ch] || ch).join(' ');
+        return designSpelled + ' ' + flightNumberSpoken(num);
+      }
+    }
+    // Otherwise spell letters in NATO and digits as words
+    let parts = [];
+    for (const ch of s){
+      if (/[0-9]/.test(ch)) parts.push(digitWord(ch));
+      else if (/[A-Z]/.test(ch)) parts.push(NATO[ch]||ch);
+      else parts.push(ch);
+    }
+    return parts.join(' ');
+  }
+  // initialize voices on load
+  if (supportsSpeech()){
+    populateVoices();
+    // some browsers fire voiceschanged asynchronously
+    if ('onvoiceschanged' in speechSynthesis) speechSynthesis.onvoiceschanged = populateVoices;
+  } else {
+    status.textContent = 'Speech synthesis not available in this browser.';
+  }
+
+  // Shared speak helper: speaks the provided speechText and manages currentUtterance/status
+  // store the last spoken text and label for retransmit
+  let lastSpeechText = '';
+  let lastStatusLabel = '';
+  // remember last chosen voice index so retransmit can reuse same voice
+  let lastChosenVoiceIdx = -1;
+  // remember last rate/pitch/volume
+  let lastRate = null;
+  let lastPitch = null;
+  let lastVolume = null;
+  function speakText(speechText, statusLabel, reuseLastVoice=false){
+    // remember last spoken text for retransmit
+    try { lastSpeechText = String(speechText); lastStatusLabel = statusLabel || ''; } catch(e) { lastSpeechText = ''; lastStatusLabel = ''; }
+    try {
+      const voices = speechSynthesis.getVoices() || [];
+        let chosenIdx = -1;
+        if (reuseLastVoice && typeof lastChosenVoiceIdx === 'number' && lastChosenVoiceIdx >= 0 && voices[lastChosenVoiceIdx]) {
+          chosenIdx = lastChosenVoiceIdx;
+        } else {
+          if (preferredVoiceIndices && preferredVoiceIndices.length) chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+          if (chosenIdx === -1 && voices.length) chosenIdx = Math.floor(Math.random() * Math.min(3, voices.length));
+        }
+      const utt = new SpeechSynthesisUtterance(speechText);
+      if (!isNaN(chosenIdx) && voices[chosenIdx]) utt.voice = voices[chosenIdx];
+        // remember which index we used
+        try { if (!isNaN(chosenIdx)) lastChosenVoiceIdx = chosenIdx; } catch(e){}
+      // set or reuse rate/pitch/volume
+      if (reuseLastVoice && lastRate !== null) {
+        utt.rate = lastRate;
+        utt.pitch = lastPitch !== null ? lastPitch : 1.2;
+        utt.volume = lastVolume !== null ? lastVolume : parseFloat(volumeEl.value);
+      } else {
+        utt.rate = parseFloat(rateEl.value);
+        utt.pitch = 1.2;
+        utt.volume = parseFloat(volumeEl.value);
+        // remember these values for potential retransmit
+        try { lastRate = utt.rate; lastPitch = utt.pitch; lastVolume = utt.volume; } catch(e){}
+      }
+      utt.onstart = () => { currentUtterance = utt; status.textContent = statusLabel || 'Speaking...'; };
+      utt.onend = () => { currentUtterance = null; status.textContent = 'Finished.'; };
+      utt.onerror = (e) => { console.error('Speech error', e); status.textContent = 'An error occurred during speech.'; };
+      speechSynthesis.speak(utt);
+    } catch (e){ console.error('speakText failed', e); status.textContent = 'An error occurred during speech.'; }
+  }
+  // retransmit button behavior
+  const retransmitBtn = document.getElementById('retransmitBtn');
+  if (retransmitBtn) {
+    retransmitBtn.addEventListener('click', () => {
+      if (!supportsSpeech()) return;
+      if (!lastSpeechText) { status.textContent = 'No previous speech to retransmit.'; return; }
+      speechSynthesis.cancel();
+      speakText(lastSpeechText, lastStatusLabel || 'Retransmitting...', true);
+    });
+  }
+  const spokenBox = document.getElementById('spokenBox');
+  const showTextBtn = document.getElementById('showTextBtn');
+  const arrivalTaxiBtn = document.getElementById('arrivalTaxiBtn');
+
+  // Callsign Listening feature: modal-driven. Button opens modal; modal Confirm starts listening with options.
+  const callSignListenBtn = document.getElementById('callSignListenBtn');
+  let callSignListenInterval = null;
+  // utility: in-place Fisher-Yates shuffle
+  function shuffleArray(arr){
+    if(!arr || !arr.length) return arr;
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    }
+    return arr;
+  }
+  // pickCallsignForScope supports an optional second parameter `blend`.
+  // When `blend` is true (used by the Callsign Listening button) and scope === 'list',
+  // the function will blend visible-list items with a sampled set of GA and jet callsigns
+  // (excluding airline-style carriers). When `blend` is false or omitted, behaviour is
+  // the conservative default (prefer visible list, fall back to jets only when empty).
+  function pickCallsignForScope(scope, blend){
+    if (scope === 'all') return randomCallsign();
+    if (scope === 'list'){
+      // pick from visible ground practice list if present
+      const ol = (function(){ try { return document.querySelector('#groundPracticeList'); } catch(e){ return null; } })();
+        let items = [];
+        try {
+          if (ol && ol.children.length){
+            items = Array.from(ol.children).map(li => {
+              // extract callsign-like tokens from text content (first uppercase token)
+              const txt = li.textContent || '';
+              const m = txt.match(/([A-Z0-9]{2,8})/);
+              return m ? m[1] : null;
+            }).filter(Boolean);
+          }
+        } catch(e){}
+
+        if (blend){
+          // Blend visible items with GA and jet samples so Callsign Listening hears a mix.
+          const pool = [];
+          if (items.length) pool.push(...items);
+
+          try {
+            // add a few GA / small-engine callsigns
+            const gaCandidates = CALLSIGNS_ALL.filter(c => {
+              const rt = getRawTypeKey(c);
+              return rt && SMALL_ENGINE_TYPES.includes(rt);
+            });
+            shuffleArray(gaCandidates);
+            pool.push(...gaCandidates.slice(0,6));
+          } catch(e){}
+
+          try {
+            // add a few jet-type callsigns (exclude airline-style carriers)
+            const jetCandidates = CALLSIGNS_ALL.filter(c => {
+              if (/^[A-Z]{2,3}[0-9]/i.test(c)) return false; // airline-style -> exclude
+              const rt = getRawTypeKey(c);
+              if (!rt) return false;
+              if (rt.startsWith('H')) return true;
+              if (typeof TWIN_JET_TYPES !== 'undefined' && TWIN_JET_TYPES.includes(rt)) return true;
+              if (typeof largeJets !== 'undefined' && largeJets.includes(rt)) return true;
+              return false;
+            });
+            shuffleArray(jetCandidates);
+            pool.push(...jetCandidates.slice(0,4));
+          } catch(e){}
+
+          // dedupe and pick
+          const uniq = Array.from(new Set(pool));
+          if (uniq.length) return uniq[Math.floor(Math.random()*uniq.length)];
+        }
+
+  // If not blending, or blend failed to produce, preserve previous behaviour:
+        // prefer visible list entries; if none, fall back to jet-only selection.
+        if (items.length) return items[Math.floor(Math.random()*items.length)];
+
+        // visible list empty -> fall back to jet-type callsigns (exclude airline-style carriers)
+        try {
+          const jets = CALLSIGNS_ALL.filter(c => {
+            if (/^[A-Z]{2,3}[0-9]/i.test(c)) return false;
+            const rt = getRawTypeKey(c);
+            if (!rt) return false;
+            if (rt.startsWith('H')) return true;
+            if (typeof TWIN_JET_TYPES !== 'undefined' && TWIN_JET_TYPES.includes(rt)) return true;
+            if (typeof largeJets !== 'undefined' && largeJets.includes(rt)) return true;
+            return false;
+          });
+          if (jets && jets.length) {
+            const uniqJets = Array.from(new Set(jets));
+            return uniqJets[Math.floor(Math.random()*uniqJets.length)];
+          }
+  } catch(e){}
+
+  return randomCallsign();
+    }
+      // New scope: civilian-only (all aircraft except air carriers and military)
+      if (scope === 'civil' || scope === 'noncarriers'){
+        try {
+          const candidates = CALLSIGNS_ALL.filter(c => {
+            const up = (c||'').toUpperCase();
+            // exclude airline-style designators (2-3 letters + digits)
+            if (/^[A-Z]{2,3}[0-9]/i.test(c)) return false;
+            // exclude obvious military prefixes
+            const isMilitary = up.startsWith('BUZZ') || up.startsWith('BLAZE') || up.startsWith('SOON') || up.startsWith('RAPTOR') || up.startsWith('AF') || up.startsWith('ANG') || up.startsWith('MARINE') || up.startsWith('SOONER') || up.startsWith('C130') || up.startsWith('F15') || up.startsWith('F16') || up.startsWith('F18') || up.startsWith('F22') || up.startsWith('KC10');
+            if (isMilitary) return false;
+            // explicit exclusions
+            if (up === 'BLAZE' || up === 'BUZZ') return false;
+            return true;
+          });
+          if (candidates && candidates.length){ const uniq = Array.from(new Set(candidates)); return uniq[Math.floor(Math.random()*uniq.length)]; }
+        } catch(e){}
+        return randomCallsign();
+      }
+      if (scope === 'ga'){
+      // pick a type from small engine set
+      const smallKeys = Object.keys(CALLSIGNS_BY_TYPE).filter(k => SMALL_ENGINE_TYPES.includes(k));
+      if (smallKeys.length){ const tk = smallKeys[Math.floor(Math.random()*smallKeys.length)]; return randomCallsignForType(tk); }
+      return randomCallsign();
+    }
+    if (scope === 'carriers'){
+      // pick known airline-style callsigns (2-3 letters + digits)
+      const candidates = CALLSIGNS_ALL.filter(c => /^[A-Z]{2,3}[0-9]/i.test(c));
+      if (candidates.length) return candidates[Math.floor(Math.random()*candidates.length)];
+      return randomCallsign();
+    }
+    return randomCallsign();
+  }
+
+  function startCallsignListeningWithOptions(intervalSec, scope, appendToLog){
+    if (!supportsSpeech()) { status.textContent = 'Speech synthesis not available.'; return; }
+    if (callSignListenInterval) return;
+    const ms = Math.max(500, Math.floor(intervalSec) * 1000);
+    callSignListenInterval = setInterval(() => {
+      try {
+  const callsign = pickCallsignForScope(scope || 'all', (scope === 'list'));
+        const phon = phoneticCallsign(callsign);
+        const rawTypeKey = getRawTypeKey(callsign);
+        let phoneticSpoken = phon;
+        try { const up = callsign.toUpperCase(); const mm = up.match(/^N([A-Z0-9]+)$/); if (mm && rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){ const tail = mm[1]; const manu = MANUFACTURER_MAP[rawTypeKey]; const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' '); phoneticSpoken = `${manu} ${tailSpoken}`; } } catch(e){}
+        speakText(phoneticSpoken, `Callsign Listening ${callsign}`);
+  if (appendToLog && spokenBox){ const ol = ensureGroundPracticeList(); if (ol){ const li = document.createElement('li'); const typeLabel = rawTypeKey ? (MANUFACTURER_MAP[rawTypeKey] || rawTypeKey) : 'unknown'; li.textContent = `Callsign Listening: ${callsign} — ${typeLabel}`; ol.appendChild(li); ol.scrollTop = ol.scrollHeight; } }
+      } catch(e) { console.error('Callsign listening error', e); }
+    }, ms);
+    if (callSignListenBtn) callSignListenBtn.textContent = 'Stop Callsign Listening';
+    status.textContent = 'Callsign Listening started.';
+  }
+  function stopCallsignListening(){ if (callSignListenInterval){ clearInterval(callSignListenInterval); callSignListenInterval = null; } if (callSignListenBtn) callSignListenBtn.textContent = 'Callsign Listening'; status.textContent = 'Callsign Listening stopped.'; }
+
+  // Modal wiring
+  const clModal = document.getElementById('clModal');
+  const clConfirmBtn = document.getElementById('clConfirmBtn');
+  const clCancelBtn = document.getElementById('clCancelBtn');
+  if (callSignListenBtn && clModal){
+    callSignListenBtn.addEventListener('click', () => {
+      // If listening is active, treat the button as a stop toggle
+      if (callSignListenInterval){
+        stopCallsignListening();
+        return;
+      }
+      // open modal to configure options
+      try {
+        const mInterval = document.getElementById('modal_clIntervalSec');
+        const mScope = document.getElementById('modal_clScope');
+        const mAppend = document.getElementById('modal_clAppend');
+        // prefill from hidden inputs if present
+        const hidInt = document.getElementById('clIntervalSec');
+        const hidScope = document.getElementById('clScope');
+        const hidAppend = document.getElementById('clAppend');
+        if (mInterval) mInterval.value = hidInt ? hidInt.value : (mInterval.value || 5);
+        if (mScope) mScope.value = hidScope ? hidScope.value : (mScope.value || 'all');
+        if (mAppend) mAppend.checked = hidAppend ? (hidAppend.value === '1') : true;
+      } catch(e){}
+      clModal.style.display = 'flex';
+    });
+  }
+  if (clCancelBtn && clModal) clCancelBtn.addEventListener('click', () => { clModal.style.display = 'none'; status.textContent = 'Callsign Listening canceled.'; });
+  if (clConfirmBtn && clModal) clConfirmBtn.addEventListener('click', () => {
+    try {
+      const mInterval = document.getElementById('modal_clIntervalSec');
+      const mScope = document.getElementById('modal_clScope');
+      const mAppend = document.getElementById('modal_clAppend');
+      const intervalVal = mInterval ? Math.max(1, Number(mInterval.value) || 5) : 5;
+      const scopeVal = mScope ? String(mScope.value) : 'all';
+      const appendVal = mAppend && mAppend.checked ? '1' : '0';
+      // persist hidden inputs
+      let hidInt = document.getElementById('clIntervalSec'); if (!hidInt){ hidInt = document.createElement('input'); hidInt.type='hidden'; hidInt.id='clIntervalSec'; document.body.appendChild(hidInt); }
+      let hidScope = document.getElementById('clScope'); if (!hidScope){ hidScope = document.createElement('input'); hidScope.type='hidden'; hidScope.id='clScope'; document.body.appendChild(hidScope); }
+      let hidAppend = document.getElementById('clAppend'); if (!hidAppend){ hidAppend = document.createElement('input'); hidAppend.type='hidden'; hidAppend.id='clAppend'; document.body.appendChild(hidAppend); }
+      hidInt.value = String(intervalVal); hidScope.value = scopeVal; hidAppend.value = appendVal;
+      clModal.style.display = 'none';
+      // start listening
+      startCallsignListeningWithOptions(intervalVal, scopeVal, appendVal === '1');
+    } catch(e){ console.error('CL confirm error', e); clModal.style.display='none'; }
+  });
+
+  // Manufacturer map for type keys -> spoken manufacturer name
+  const MANUFACTURER_MAP = {
+    BE40: 'Beechjet',
+    AC68: 'Commander',
+    BE20: 'King Air',
+    BE36: 'Bonanza',
+    BE58: 'Baron',
+    C550: 'Citation',
+    PA31: 'Navajo',
+    PA34: 'Seneca',
+    PA46: 'Malibu',
+    PC12: 'Pilatus',
+    SR22: 'Cirrus',
+    MD11: 'MD Eleven',
+    H_MD11: 'MD Eleven',
+    DH8D: 'Dash Eight',
+    DH8: 'Dash Eight',
+    MD81: 'MD Eighty',
+    CL60: 'Challenger',
+    CRJ: 'Regional Jet',
+    GLF4: 'Gulfstream',
+    GLF3: 'Gulfstream',
+    FA20: 'Falcon',
+    LJ35: 'Learjet',
+    B206: 'Helicopter',
+    B06: 'Helicopter',
+    C172: 'Cessna',
+    C208: 'Cessna',
+    C310: 'Twin Cessna',
+    C421: 'Twin Cessna',
+    M20P: 'Mooney',
+    P28A: 'Cherokee',
+    PA28A: 'Cherokee',
+    PAY3: 'Cheyenne'
+  };
+
+  // Types considered small-engine (general aviation / light props)
+  // Assumption: these type keys correspond to small single/twin props that might request intersection departures
+  const SMALL_ENGINE_TYPES = ['C172','P28A','PA31','PA34','PA46','PAY3','M20P','SR22','PC12','BE36','BE20','C310','C421','BE58'];
+
+  // convert registration tail (after leading N) to a phonetic-friendly spoken string
+  function phoneticRegTail(regTail){
+    const parts = [];
+    for (const ch of regTail.toUpperCase()){
+      if (/[0-9]/.test(ch)) parts.push(digitWord(ch));
+      else if (/[A-Z]/.test(ch)) parts.push(NATO[ch] || ch);
+      else parts.push(ch);
+    }
+    return parts.join(' ');
+  }
+
+  // Active runway UI and options
+  const activeRunwayEl = document.getElementById('activeRunway');
+  const RUNWAYS = ['RW10L', 'RW28R'];
+  // Map base runway numbers to available side suffixes. Empty string means no side (e.g., RW16)
+  // Use weighted arrays so we can bias side selection (favor L for 10, R for 28)
+  const RUNWAY_SIDES = {
+    // Bias: make 10L more likely than 10R
+    '10': ['L','L','L','R'],
+    // Bias: make 28R more likely than 28L
+    '28': ['R','R','R','L'],
+    '16': ['']
+  };
+  const SEQ_INTERSECTION_PROB = 0.40; // 40% chance for sequence intersection departures
+  // Helper: extract the numeric base from a runway string like 'RW10L' -> '10'
+  function runwayBase(rw){
+    if (!rw) return '';
+    const m = String(rw).toUpperCase().match(/^RW(\d{1,2})/);
+    return m ? m[1] : '';
+  }
+  // Prefer the active runway most of the time; small chance to pick RW16 for variety
+  function randomRunway(preferActive=true){
+    // 5% chance to pick RW16 explicitly
+    if (Math.random() < 0.05) return 'RW16';
+    // If preferActive and there's an activeRunwayEl, return it 80% of the time
+    if (preferActive && activeRunwayEl && activeRunwayEl.textContent) {
+      if (Math.random() < 0.8) return activeRunwayEl.textContent.replace(/\s*·.*$/,'');
+    }
+    return RUNWAYS[Math.floor(Math.random()*RUNWAYS.length)];
+  }
+  // initialize active runway (use simple random runway for standard UI)
+  if (activeRunwayEl) activeRunwayEl.textContent = RUNWAYS[Math.floor(Math.random()*RUNWAYS.length)];
+
+  // Arrival template
+  const ARRIVAL_TEMPLATE = 'Academy Ground, {callsign}, Request taxi to {destination}, at taxiway {taxiway}';
+
+  
+
+  // Helper to pick a random element
+  function choice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+  // Airline / category lists
+  const AIRLINE_BIG = ['AAL','UAL'];
+  const AIRLINE_CARGO = ['FDX','UPS','MTN','PDT'];
+
+  // Types considered twin/jet (add more as needed)
+  const TWIN_JET_TYPES = ['C310','C421','BE40','BE58','C550','CL60','GLF3','LJ35','FA20','CRJ','B737','B757','B767','B777','MD81','MD11'];
+
+  // Find the type/manufacturer key for a given callsign (returns key or empty string)
+  function getTypeForCallsign(call){
+    if (!call) return '';
+    const up = call.toUpperCase();
+    for (const [type, list] of Object.entries(CALLSIGNS_BY_TYPE)){
+      if (list.includes(up)) return type.replace('_','/');
+    }
+    return '';
+  }
+
+  // Return the raw type key (e.g. 'H_A300') for a given callsign or empty string
+  function getRawTypeKey(call){
+    if (!call) return '';
+    const up = call.toUpperCase();
+    for (const [type, list] of Object.entries(CALLSIGNS_BY_TYPE)){
+      if (list.includes(up)) return type;
+    }
+    return '';
+  }
+
+  // Determine SRS category and wake turbulence category from raw type key
+  // SRS categories: 'I' = large/heavy, 'II' = medium, 'III' = small
+  // Wake categories: 'H' = Heavy, 'M' = Medium, 'L' = Light
+  function getSrsWake(rawType){
+    if (!rawType) return { srsCat: 'II', wake: 'M' };
+    const up = rawType.toUpperCase();
+    // Heavy / large jets (includes keys that start with H_ or known heavy types)
+    const heavyKeys = ['H_A300','H_A340','H_B747','H_B767','H_B777','H_MD11','H_KC10','H_B767','H_B777'];
+    const largeJets = ['B737','B757','B767','B777','B727','A320','A340','MD81','MD11','H_A300','H_A340','H_B747','H_B767','H_B777','H_MD11'];
+    const medium = ['C550','CL60','GLF3','GLF4','LJ35','CRJ','B206','BE40','BE58','BE20','BE36','C208','C310','C421','PC12'];
+    // Small/general aviation
+    const small = SMALL_ENGINE_TYPES;
+
+    if (up.startsWith('H_') || largeJets.includes(up)) return { srsCat: 'I', wake: 'H' };
+    if (medium.includes(up) || TWIN_JET_TYPES.includes(up)) return { srsCat: 'II', wake: 'M' };
+    if (small.includes(up)) return { srsCat: 'III', wake: 'L' };
+    // default
+    return { srsCat: 'II', wake: 'M' };
+  }
+  // Phrase template and locations used by departure
+  const PHRASE_TEMPLATE = 'Academy Ground, {callsign}, Requesting Departure at {location}, we have information alpha';
+  const LOCATIONS = ['Terminal','Main Ramp','Falcon Air','Spartan Aviation'];
+  function randomLocation(){ return LOCATIONS[Math.floor(Math.random()*LOCATIONS.length)]; }
+  function formatLocationForSpeech(loc){ if (!loc) return ''; if (loc === 'Terminal' || loc === 'Main Ramp') return 'the ' + loc; return loc; }
+
+  // Centralized ramp/origin selection for a given callsign
+  // Rules:
+  // - Cargo carriers (AIRLINE_CARGO) -> Main Ramp
+  // - Military -> Main Ramp
+  // - Heavy category (SRS category I) -> Terminal (except cargo carriers)
+  // - Twin-engine types and small-engine (GA) -> Falcon Air or Spartan Aviation
+  // - Air carriers (designator present) -> Terminal
+  // - Fallback -> randomLocation()
+  function pickRampForCallsign(callsign){
+    try {
+      const up = (callsign || '').toUpperCase();
+      const m = up.match(/^([A-Z]{2,3})/);
+      const design = m ? m[1] : null;
+      const rawTypeKey = getRawTypeKey(callsign);
+      const srs = getSrsWake(rawTypeKey || '');
+      const isHeavy = srs && srs.srsCat === 'I';
+      const isCargo = design && AIRLINE_CARGO.includes(design);
+      const isSmallEngine = rawTypeKey && SMALL_ENGINE_TYPES.includes(rawTypeKey);
+      const isTwin = rawTypeKey && TWIN_JET_TYPES.includes(rawTypeKey);
+      const isMilitary = up.startsWith('MIL') || up.startsWith('USAF') || up.startsWith('NAVY') || up.startsWith('ARMY') || up.startsWith('AF') || up.startsWith('ANG');
+
+      // Cargo carriers and military always use Main Ramp
+      if (isCargo || isMilitary) return 'Main Ramp';
+      // Heavy aircraft (SRS I) -> Terminal (except cargo which handled above)
+      if (isHeavy) return 'Terminal';
+      // Twin-engine and small GA -> GA ramps
+      if (isSmallEngine || isTwin) return (Math.random() < 0.5) ? 'Falcon Air' : 'Spartan Aviation';
+      // Airline-style callsigns -> Terminal
+      if (design) return 'Terminal';
+      return randomLocation();
+    } catch (e) {
+      return randomLocation();
+    }
+  }
+
+  // Departure behavior
+  if (departureBtn) {
+    departureBtn.addEventListener('click', () => {
+      if (!supportsSpeech()) return;
+      // Cancel any existing speech
+      speechSynthesis.cancel();
+
+  // Pick a random type and then a random callsign from that type
+  // Favor GA/twin types for tower arrivals
+  const typeKey = weightedGroundTypeKey();
+  const callsign = randomCallsignForType(typeKey);
+  // Decide origin using centralized routing helper
+  const location = pickRampForCallsign(callsign);
+      const displayText = PHRASE_TEMPLATE.replace('{callsign}', callsign).replace('{location}', location);
+
+      // phonetic and manufacturer-aware spoken form
+      const phonetic = phoneticCallsign(callsign);
+      const up = callsign.toUpperCase();
+      const rawTypeKey = getRawTypeKey(callsign);
+      let phoneticSpoken = phonetic;
+      try {
+        const mm = up.match(/^N([A-Z0-9]+)$/);
+        if (mm) {
+          const tail = mm[1];
+          if (rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){
+            const manu = MANUFACTURER_MAP[rawTypeKey];
+            const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+            phoneticSpoken = `${manu} ${tailSpoken}`;
+          } else {
+            phoneticSpoken = phonetic;
+          }
+        } else {
+          phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+        }
+      } catch (e) {
+        phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+      }
+
+      const speechLocation = formatLocationForSpeech(location);
+      const isSmallEngine = rawTypeKey && SMALL_ENGINE_TYPES.includes(rawTypeKey);
+      const requestIntersection = isSmallEngine && (Math.random() < 0.25);
+      const speechLocationWithIntersection = requestIntersection ? (speechLocation + ', Request intersection departure') : speechLocation;
+      const speechTextPrimary = PHRASE_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{location}', speechLocationWithIntersection);
+
+      // Update the spoken text box content but do NOT change its visibility
+      if (spokenBox) {
+        spokenBox.innerHTML = '';
+        const p = document.createElement('div');
+        const parts = PHRASE_TEMPLATE.split('{callsign}');
+        const beforeText = (parts[0] || '').replace('{location}', location);
+        const afterText = (parts.slice(1).join('{callsign}') || '').replace('{location}', location);
+        p.appendChild(document.createTextNode(beforeText));
+        const cs = document.createElement('span');
+        cs.textContent = callsign;
+        if (rawTypeKey && rawTypeKey.startsWith('H')) cs.appendChild(document.createTextNode(' Heavy'));
+        p.appendChild(cs);
+        const afterTextWithIx = (afterText || '').replace(location, requestIntersection ? (location + ', Request intersection departure') : location);
+        p.appendChild(document.createTextNode(afterTextWithIx));
+        const m = document.createElement('div');
+        m.className = 'manufacturer';
+        const type = getTypeForCallsign(callsign);
+        m.textContent = type ? `Type / Manufacturer: ${type}` : '';
+        spokenBox.appendChild(p);
+        spokenBox.appendChild(m);
+      }
+
+  // Update and show active runway for departures
+  // Prefer the current active runway most of the time; allow small chance of RW16
+  const runway = randomRunway(true);
+  if (activeRunwayEl) activeRunwayEl.textContent = runway;
+
+      // choose voice
+      const voices = speechSynthesis.getVoices() || [];
+      let chosenIdx = -1;
+      if (preferredVoiceIndices && preferredVoiceIndices.length) {
+        chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+      }
+      if (chosenIdx === -1 && voices.length) {
+        const fallbackCount = Math.min(3, voices.length);
+        chosenIdx = Math.floor(Math.random() * fallbackCount);
+      }
+      function applyVoiceAndParamsLocal(utt) {
+        if (!isNaN(chosenIdx) && voices[chosenIdx]) utt.voice = voices[chosenIdx];
+        utt.rate = parseFloat(rateEl.value);
+        utt.pitch = 1.2;
+        utt.volume = parseFloat(volumeEl.value);
+      }
+
+  // speak via shared helper
+  speakText(speechTextPrimary, 'Speaking departure phrase...');
+    });
+  }
+
+    // Arrival Taxi behavior
+    if (arrivalTaxiBtn) {
+      arrivalTaxiBtn.addEventListener('click', () => {
+        if (!supportsSpeech()) return;
+        speechSynthesis.cancel();
+        // Microphone functionality removed per user request
+
+  const typeKey = randomTypeKey();
+  const callsign = randomCallsignForType(typeKey);
+  const rawTypeKey = getRawTypeKey(callsign);
+  // choose and display an active runway for arrival (match departure behavior)
+  // Use simple random runway for arrivals (do not apply weighted logic here)
+  const runway = RUNWAYS[Math.floor(Math.random()*RUNWAYS.length)];
+  if (activeRunwayEl) activeRunwayEl.textContent = runway;
+        // determine airline designator if present
+        const up = callsign.toUpperCase();
+        const m = up.match(/^([A-Z]{2,3})/);
+        const design = m ? m[1] : null;
+
+        // decide categories and choose taxiway/destination per user rules
+        const isBigAirline = design && AIRLINE_BIG.includes(design);
+        const isCargo = design && AIRLINE_CARGO.includes(design);
+        const isSmallEngine = rawTypeKey && SMALL_ENGINE_TYPES.includes(rawTypeKey);
+        const isTwinOrJet = rawTypeKey && (rawTypeKey.startsWith('H') || TWIN_JET_TYPES.includes(rawTypeKey));
+        const isMilitary = up.startsWith('MIL') || up.startsWith('USAF') || up.startsWith('NAVY') || up.startsWith('ARMY') || up.startsWith('AF') || up.startsWith('ANG');
+
+        // Arrival taxiways: Delta, Echo, Foxtrot only (Charlie is not used for arrivals)
+        let taxiway = 'Delta';
+        // Decide destination using centralized routing helper
+        const destRamp = pickRampForCallsign(callsign);
+        let destination = (destRamp === 'Terminal' || destRamp === 'Main Ramp') ? ('the ' + destRamp) : destRamp;
+        if (destRamp === 'Main Ramp') taxiway = choice(['Echo','Foxtrot']);
+        else if (destRamp === 'Terminal') taxiway = 'Foxtrot';
+        else taxiway = choice(['Delta','Echo']);
+
+        // Update the active runway box to include the taxiway chosen for this arrival
+        if (activeRunwayEl) {
+          // keep the runway string but append taxiway info for arrivals
+          activeRunwayEl.textContent = (activeRunwayEl.textContent || '').split('\n')[0] + ' · Taxiway: ' + taxiway;
+        }
+
+        // build display and phonetic speech similar to departure
+        const displayText = ARRIVAL_TEMPLATE.replace('{callsign}', callsign).replace('{destination}', destination).replace('{taxiway}', taxiway);
+
+        // phonetic for speech
+        const phonetic = phoneticCallsign(callsign);
+        let phoneticSpoken = phonetic;
+        try {
+          const mm = up.match(/^N([A-Z0-9]+)$/);
+          if (mm) {
+            const tail = mm[1];
+            if (rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){
+              const manu = MANUFACTURER_MAP[rawTypeKey];
+              const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+              phoneticSpoken = `${manu} ${tailSpoken}`;
+            } else {
+              phoneticSpoken = phonetic;
+            }
+          } else {
+            phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+          }
+        } catch (e) {
+          phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+        }
+
+        const speechText = ARRIVAL_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{destination}', destination).replace('{taxiway}', taxiway);
+
+        // update spoken box (do not change its visibility)
+          if (spokenBox) {
+            spokenBox.innerHTML = '';
+            const p = document.createElement('div');
+            const parts = ARRIVAL_TEMPLATE.split('{callsign}');
+            const beforeText = (parts[0] || '');
+            const afterText = (parts.slice(1).join('{callsign}') || '')
+              .replace('{destination}', destination).replace('{taxiway}', taxiway);
+            p.appendChild(document.createTextNode(beforeText));
+            const cs = document.createElement('span');
+            cs.textContent = callsign;
+            if (rawTypeKey && rawTypeKey.startsWith('H')) cs.appendChild(document.createTextNode(' Heavy'));
+            p.appendChild(cs);
+            p.appendChild(document.createTextNode(afterText));
+            const mdiv = document.createElement('div');
+            mdiv.className = 'manufacturer';
+            const type = getTypeForCallsign(callsign);
+            mdiv.textContent = type ? `Type / Manufacturer: ${type}` : '';
+            spokenBox.appendChild(p);
+            spokenBox.appendChild(mdiv);
+          }
+
+        // speak
+        const voices = speechSynthesis.getVoices() || [];
+        let chosenIdx = -1;
+        if (preferredVoiceIndices && preferredVoiceIndices.length) {
+          chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+        }
+        if (chosenIdx === -1 && voices.length) {
+          const fallbackCount = Math.min(3, voices.length);
+          chosenIdx = Math.floor(Math.random() * fallbackCount);
+        }
+        function applyVoiceAndParams(utt) {
+          if (!isNaN(chosenIdx) && voices[chosenIdx]) utt.voice = voices[chosenIdx];
+          utt.rate = parseFloat(rateEl.value);
+          utt.pitch = 1.2;
+          utt.volume = parseFloat(volumeEl.value);
+        }
+  // speak via shared helper
+  speakText(speechText, 'Speaking taxi request...');
+      });
+    }
+
+    // Arrival (Tower) behavior — reintroduced per user request
+  const TOWER_ARRIVAL_TEMPLATE = 'Academy Tower, {callsign}, {location}, request full stop, we have information {phoneticLetter}';
+  const TOWER_LOCATIONS = ['McDonald Bridge','7 mile South-East','Riverside','7 mile South', '7 mile South-West', '7 mile east', 'Woody','Sandsprings','Owasso','Chandler'];
+    function randomNatoLetter(){ const letters = Object.keys(NATO); return choice(letters); }
+
+    const arrivalBtn = document.getElementById('arrivalBtn');
+    if (arrivalBtn) {
+      arrivalBtn.addEventListener('click', () => {
+        if (!supportsSpeech()) return;
+        speechSynthesis.cancel();
+
+        // choose a location first; enforce Woody-only carriers/cargo rule
+        const location = choice(TOWER_LOCATIONS);
+        let callsign;
+        // airline-style regex: 2-3 letters followed by digits
+        const airlineRegex = /^[A-Z]{2,3}[0-9]/i;
+        // predicate: contains letter 'N' (case-insensitive)
+        const hasN = c => (typeof c === 'string') && c.toUpperCase().includes('N');
+
+        if (location === 'Woody'){
+          // Only air carriers / cargo at Woody: pick airline-like callsigns that also include 'N'
+          let airlineCandidates = CALLSIGNS_ALL.filter(c => airlineRegex.test(c));
+          airlineCandidates = airlineCandidates.filter(hasN);
+          if (airlineCandidates.length) {
+            callsign = airlineCandidates[Math.floor(Math.random()*airlineCandidates.length)];
+          } else {
+            // fallback: pick any callsign that contains 'N'
+            const nCandidates = CALLSIGNS_ALL.filter(hasN);
+            callsign = nCandidates.length ? nCandidates[Math.floor(Math.random()*nCandidates.length)] : randomCallsign();
+          }
+        } else {
+          // For non-Woody locations, explicitly avoid airline/cargo callsigns and require 'N' in the callsign
+          let nonAirline = CALLSIGNS_ALL.filter(c => !airlineRegex.test(c));
+          nonAirline = nonAirline.filter(hasN);
+          if (nonAirline.length) callsign = nonAirline[Math.floor(Math.random()*nonAirline.length)];
+          else {
+            // fallback: prefer any N-containing callsign
+            const nCandidates = CALLSIGNS_ALL.filter(hasN);
+            callsign = nCandidates.length ? nCandidates[Math.floor(Math.random()*nCandidates.length)] : randomCallsign();
+          }
+        }
+        const rawTypeKey = getRawTypeKey(callsign);
+
+        // phonetic/manufacturer formatting similar to other handlers
+        const phonetic = phoneticCallsign(callsign);
+        let phoneticSpoken = phonetic;
+        try {
+          const up = callsign.toUpperCase();
+          const mm = up.match(/^N([A-Z0-9]+)$/);
+          if (mm && rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){
+            const tail = mm[1];
+            const manu = MANUFACTURER_MAP[rawTypeKey];
+            const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch)? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+            phoneticSpoken = `${manu} ${tailSpoken}`;
+          } else {
+            phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+          }
+
+
+        } catch (e) {
+          phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+        }
+
+        const phoneticLetter = randomNatoLetter();
+        const speechText = TOWER_ARRIVAL_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{location}', location).replace('{phoneticLetter}', NATO[phoneticLetter] || phoneticLetter);
+
+        // update spoken box (do not change visibility)
+        if (spokenBox) {
+          spokenBox.innerHTML = '';
+          const p = document.createElement('div');
+          p.appendChild(document.createTextNode(TOWER_ARRIVAL_TEMPLATE.replace('{callsign}', callsign).replace('{location}', location).replace('{phoneticLetter}', phoneticLetter)));
+          const m = document.createElement('div');
+          m.className = 'manufacturer';
+          m.textContent = getTypeForCallsign(callsign) ? `Type / Manufacturer: ${getTypeForCallsign(callsign)}` : '';
+          spokenBox.appendChild(p);
+          spokenBox.appendChild(m);
+        }
+
+        // speak
+        const voices = speechSynthesis.getVoices() || [];
+        let chosenIdx = -1;
+        if (preferredVoiceIndices && preferredVoiceIndices.length) chosenIdx = preferredVoiceIndices[Math.floor(Math.random() * preferredVoiceIndices.length)];
+        if (chosenIdx === -1 && voices.length) chosenIdx = Math.floor(Math.random() * Math.min(3, voices.length));
+  // speak via shared helper
+  speakText(speechText, 'Speaking tower arrival...');
+
+            });
+          }
+
+        // Ground Practice controller (top-level)
+  const groundPracticeBtn = document.getElementById('groundPracticeBtn');
+  const stopGroundBtn = document.getElementById('stopGroundBtn');
+  let groundPracticeInterval = null;
+  let groundPracticeRemaining = 0; // iterations left
+  let groundPracticeCounter = 0; // numbered log entries for the session
+
+  function ensureGroundPracticeList(){
+    try {
+      if (!spokenBox) return null;
+      let ol = spokenBox.querySelector('#groundPracticeList');
+      if (!ol){
+        spokenBox.classList.remove('hidden');
+        spokenBox.innerHTML = '';
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '8px';
+        title.textContent = 'Ground Practice — Log';
+        spokenBox.appendChild(title);
+        ol = document.createElement('ol');
+        ol.id = 'groundPracticeList';
+        ol.style.maxHeight = '40vh';
+        ol.style.overflow = 'auto';
+        spokenBox.appendChild(ol);
+      }
+      return ol;
+    } catch(e){ return null; }
+  }
+
+  function playRandomGroundTransmission(){
+    try {
+    // read configured departure probability if available
+    const departProbEl = document.getElementById('gpDepartProb');
+    const departProb = departProbEl ? Math.max(0, Math.min(100, Number(departProbEl.value) || 50))/100 : 0.5;
+    const pickDeparture = Math.random() < departProb;
+  if (pickDeparture) {
+  const typeKey = weightedGroundTypeKey();
+  const callsign = randomCallsignForType(typeKey);
+  const location = pickRampForCallsign(callsign);
+      const phonetic = phoneticCallsign(callsign);
+      const rawTypeKey = getRawTypeKey(callsign);
+      let phoneticSpoken = phonetic;
+      try {
+        const mm = callsign.toUpperCase().match(/^N([A-Z0-9]+)$/);
+        if (mm) {
+          const tail = mm[1];
+          if (rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){
+            const manu = MANUFACTURER_MAP[rawTypeKey];
+            const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+            phoneticSpoken = `${manu} ${tailSpoken}`;
+          } else phoneticSpoken = phonetic;
+        } else phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+      } catch(e){ phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic; }
+      const speechLocation = formatLocationForSpeech(location);
+      const isSmallEngine = rawTypeKey && SMALL_ENGINE_TYPES.includes(rawTypeKey);
+      const requestIntersection = isSmallEngine && (Math.random() < 0.25);
+      const speechLocationWithIntersection = requestIntersection ? (speechLocation + ', Request intersection departure') : speechLocation;
+      const speechTextPrimary = PHRASE_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{location}', speechLocationWithIntersection);
+      if (spokenBox) {
+        const ol = ensureGroundPracticeList();
+        if (ol){
+          groundPracticeCounter++;
+          const li = document.createElement('li');
+          const typeLabel = (typeof getTypeForCallsign === 'function' && getTypeForCallsign(callsign)) ? getTypeForCallsign(callsign) : (typeof getRawTypeKey === 'function' ? getRawTypeKey(callsign) : '');
+          li.textContent = PHRASE_TEMPLATE.replace('{callsign}', callsign).replace('{location}', requestIntersection ? (location + ', Request intersection departure') : location) + (typeLabel ? ` — ${typeLabel}` : '');
+          ol.appendChild(li);
+          ol.scrollTop = ol.scrollHeight;
+        }
+      }
+      if (supportsSpeech()) speakText(speechTextPrimary, 'Ground Practice — Departure');
+    } else {
+      const typeKey = weightedGroundTypeKey();
+        const callsign = randomCallsignForType(typeKey);
+        const rawTypeKey = getRawTypeKey(callsign);
+        const runway = RUNWAYS[Math.floor(Math.random()*RUNWAYS.length)];
+      if (activeRunwayEl) activeRunwayEl.textContent = runway;
+  const up = callsign.toUpperCase();
+  const m = up.match(/^([A-Z]{2,3})/);
+  const design = m ? m[1] : null;
+  const destRamp = pickRampForCallsign(callsign);
+  let taxiway = 'Delta';
+  let destination = (destRamp === 'Terminal' || destRamp === 'Main Ramp') ? ('the ' + destRamp) : destRamp;
+  if (destRamp === 'Main Ramp') taxiway = choice(['Echo','Foxtrot']);
+  else if (destRamp === 'Terminal') taxiway = 'Foxtrot';
+  else taxiway = choice(['Delta','Echo']);
+      if (activeRunwayEl) { activeRunwayEl.textContent = (activeRunwayEl.textContent || '').split('\n')[0] + ' · Taxiway: ' + taxiway; }
+      const phonetic = phoneticCallsign(callsign);
+      let phoneticSpoken = phonetic;
+      try { const mm = up.match(/^N([A-Z0-9]+)$/); if (mm) { const tail = mm[1]; if (rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){ const manu = MANUFACTURER_MAP[rawTypeKey]; const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' '); phoneticSpoken = `${manu} ${tailSpoken}`; } else phoneticSpoken = phonetic; } else phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic; } catch(e){ phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic; }
+      const speechText = ARRIVAL_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{destination}', destination).replace('{taxiway}', taxiway);
+      if (spokenBox) {
+        const ol = ensureGroundPracticeList();
+        if (ol){
+          groundPracticeCounter++;
+          const li = document.createElement('li');
+          const typeLabel = (typeof getTypeForCallsign === 'function' && getTypeForCallsign(callsign)) ? getTypeForCallsign(callsign) : (typeof getRawTypeKey === 'function' ? getRawTypeKey(callsign) : '');
+          li.textContent = ARRIVAL_TEMPLATE.replace('{callsign}', callsign).replace('{destination}', destination).replace('{taxiway}', taxiway) + (typeLabel ? ` — ${typeLabel}` : '');
+          ol.appendChild(li);
+          ol.scrollTop = ol.scrollHeight;
+        }
+      }
+      if (supportsSpeech()) speakText(speechText, 'Ground Practice — Arrival Taxi');
+    }
+    } catch (err) {
+      console.error('playRandomGroundTransmission error', err);
+      status.textContent = 'Error during Ground Practice iteration — see console.';
+    }
+  }
+
+  // Start ground practice (exposed for inline onclick)
+  function generateAndShowTransmission(){
+    // Safe, isolated generator that will always update the spokenBox and status.
+    try {
+  // use configured departure probability
+  const departProbEl = document.getElementById('gpDepartProb');
+  const departProb = departProbEl ? Math.max(0, Math.min(100, Number(departProbEl.value) || 50))/100 : 0.5;
+  const pickDeparture = Math.random() < departProb;
+      if (pickDeparture) {
+        const typeKey = weightedGroundTypeKey();
+        const callsign = randomCallsignForType(typeKey);
+        const rawTypeKey = getRawTypeKey(callsign);
+  const location = pickRampForCallsign(callsign);
+        const phonetic = phoneticCallsign(callsign);
+        let phoneticSpoken = phonetic;
+        try { const mm = callsign.toUpperCase().match(/^N([A-Z0-9]+)$/); if (mm && rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){ const tail = mm[1]; const manu = MANUFACTURER_MAP[rawTypeKey]; const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' '); phoneticSpoken = `${manu} ${tailSpoken}`; } } catch(e){}
+        const isSmallEngine = rawTypeKey && SMALL_ENGINE_TYPES.includes(rawTypeKey);
+        const requestIntersection = isSmallEngine && (Math.random() < 0.25);
+        const display = PHRASE_TEMPLATE.replace('{callsign}', callsign).replace('{location}', requestIntersection ? (location + ', Request intersection departure') : location);
+  if (spokenBox) { const ol = ensureGroundPracticeList(); if (ol){ groundPracticeCounter++; const li = document.createElement('li'); const typeLabel = (typeof getTypeForCallsign === 'function' && getTypeForCallsign(callsign)) ? getTypeForCallsign(callsign) : (typeof getRawTypeKey === 'function' ? getRawTypeKey(callsign) : ''); li.textContent = display + (typeLabel ? ` — ${typeLabel}` : ''); ol.appendChild(li); ol.scrollTop = ol.scrollHeight; } }
+        const speechTextPrimary = PHRASE_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{location}', requestIntersection ? (location + ', Request intersection departure') : location);
+        if (supportsSpeech()) speakText(speechTextPrimary, 'Ground Practice — Departure');
+        status.textContent = `Ground Practice: ${callsign} departure`;
+      } else {
+        const typeKey = weightedGroundTypeKey();
+        const callsign = randomCallsignForType(typeKey);
+        const rawTypeKey = getRawTypeKey(callsign);
+        const up = callsign.toUpperCase();
+        const m = up.match(/^([A-Z]{2,3})/);
+        const design = m ? m[1] : null;
+        const isBigAirline = design && AIRLINE_BIG.includes(design);
+        const isCargo = design && AIRLINE_CARGO.includes(design);
+        const isTwinOrJet = rawTypeKey && (rawTypeKey.startsWith('H') || TWIN_JET_TYPES.includes(rawTypeKey));
+  const destination = isBigAirline ? 'the Terminal' : (isCargo || isTwinOrJet ? choice(['the Terminal','the Main Ramp']) : choice(['Falcon Air','Spartan Aviation']));
+  // ensure taxiway for arrival path uses only Delta/Echo/Foxtrot
+  const taxiway = isBigAirline ? 'Delta' : (isCargo || isTwinOrJet ? choice(['Delta','Echo','Foxtrot']) : choice(['Delta','Echo','Foxtrot']));
+        if (activeRunwayEl) activeRunwayEl.textContent = RUNWAYS[Math.floor(Math.random()*RUNWAYS.length)] + ' · Taxiway: ' + taxiway;
+        const display = ARRIVAL_TEMPLATE.replace('{callsign}', callsign).replace('{destination}', destination).replace('{taxiway}', taxiway);
+  if (spokenBox) { const ol = ensureGroundPracticeList(); if (ol){ groundPracticeCounter++; const li = document.createElement('li'); const typeLabel = (typeof getTypeForCallsign === 'function' && getTypeForCallsign(callsign)) ? getTypeForCallsign(callsign) : (typeof getRawTypeKey === 'function' ? getRawTypeKey(callsign) : ''); li.textContent = display + (typeLabel ? ` — ${typeLabel}` : ''); ol.appendChild(li); ol.scrollTop = ol.scrollHeight; } }
+        const phonetic = phoneticCallsign(callsign);
+        let phoneticSpoken = phonetic;
+        try { const mm = up.match(/^N([A-Z0-9]+)$/); if (mm && rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){ const tail = mm[1]; const manu = MANUFACTURER_MAP[rawTypeKey]; const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch) ? digitWord(ch) : (NATO[ch]||ch))).join(' '); phoneticSpoken = `${manu} ${tailSpoken}`; } } catch(e){}
+        const speechText = ARRIVAL_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{destination}', destination).replace('{taxiway}', taxiway);
+        if (supportsSpeech()) speakText(speechText, 'Ground Practice — Arrival Taxi');
+        status.textContent = `Ground Practice: ${callsign} taxi to ${destination}`;
+      }
+    } catch (err) {
+      console.error('generateAndShowTransmission error', err);
+      status.textContent = 'Error generating transmission — see console.';
+    }
+  }
+
+  function startGroundPractice(){
+    if (groundPracticeInterval) { status.textContent = 'Ground Practice already running.'; return; }
+    // read UI options for session length and interval
+    const lengthEl = document.getElementById('gpLength');
+    const intervalSecEl = document.getElementById('gpIntervalSec');
+    const sessionLength = lengthEl ? Math.max(1, Math.min(1000, Number(lengthEl.value) || 15)) : 15;
+    const intervalSec = intervalSecEl ? Math.max(1, Number(intervalSecEl.value) || 60) : 60;
+    // set iterations and start immediately
+    groundPracticeRemaining = sessionLength;
+    groundPracticeCounter = 0;
+    generateAndShowTransmission();
+    groundPracticeRemaining--;
+    try { groundPracticeBtn && (groundPracticeBtn.textContent = 'Ground Practice — Running'); } catch(e){}
+  groundPracticeInterval = setInterval(() => {
+    if (groundPracticeRemaining <= 0) { clearInterval(groundPracticeInterval); groundPracticeInterval = null; status.textContent = 'Ground Practice finished.'; try { groundPracticeBtn && (groundPracticeBtn.textContent = 'Ground Practice'); } catch(e){}; return; }
+    generateAndShowTransmission();
+    groundPracticeRemaining--;
+    status.textContent = `Ground Practice running — ${groundPracticeRemaining} remaining.`;
+  }, Math.max(1000, Math.floor(intervalSec) * 1000));
+    status.textContent = 'Ground Practice started — 15 minutes.';
+  }
+  // Expose for inline onclick or console testing
+  try { window.startGroundPractice = startGroundPractice; } catch(e){}
+
+  if (groundPracticeBtn) {
+    // indicate the Ground Practice button is wired
+    console.log('Ground Practice button found and listener attached');
+    groundPracticeBtn.addEventListener('click', () => {
+      const speechAvailable = supportsSpeech();
+      if (!speechAvailable) {
+        status.textContent = 'Speech synthesis unavailable — running visual-only ground practice.';
+        console.warn('Speech synthesis not available; Ground Practice will update text but not speak.');
+      }
+      if (groundPracticeInterval) { status.textContent = 'Ground Practice already running.'; return; }
+      // Open modal to ask for options before starting
+      const modal = document.getElementById('gpModal');
+      if (!modal) {
+        status.textContent = 'Configuration modal missing — cannot start.';
+        return;
+      }
+      // prefill modal inputs from defaults (or existing hidden inputs)
+      try {
+        const intervalSrc = document.getElementById('gpIntervalSec');
+        const lengthSrc = document.getElementById('gpLength');
+        const departSrc = document.getElementById('gpDepartProb');
+        const mInterval = document.getElementById('modal_gpIntervalSec');
+        const mLength = document.getElementById('modal_gpLength');
+        const mDepart = document.getElementById('modal_gpDepartProb');
+        if (mInterval) mInterval.value = intervalSrc ? intervalSrc.value : (mInterval.value || 60);
+        if (mLength) mLength.value = lengthSrc ? lengthSrc.value : (mLength.value || 15);
+        if (mDepart) mDepart.value = departSrc ? departSrc.value : (mDepart.value || 50);
+      } catch(e){}
+      modal.style.display = 'flex';
+    });
+  }
+
+  // Modal handlers: Confirm/Cancel
+  try {
+    const gpModal = document.getElementById('gpModal');
+    const gpConfirmBtn = document.getElementById('gpConfirmBtn');
+    const gpCancelBtn = document.getElementById('gpCancelBtn');
+    if (gpCancelBtn && gpModal) gpCancelBtn.addEventListener('click', () => { gpModal.style.display = 'none'; status.textContent = 'Ground Practice canceled.'; });
+    if (gpConfirmBtn && gpModal) gpConfirmBtn.addEventListener('click', () => {
+  try {
+  // pull values from modal and copy into the hidden inputs used by the runner
+  const mInterval = document.getElementById('modal_gpIntervalSec');
+  const mLength = document.getElementById('modal_gpLength');
+  const mDepart = document.getElementById('modal_gpDepartProb');
+  const mMix = document.getElementById('modal_gpTrafficMix');
+        let intervalVal = mInterval ? Number(mInterval.value) : 60;
+        let lengthVal = mLength ? Number(mLength.value) : 15;
+        let departVal = mDepart ? Number(mDepart.value) : 50;
+        intervalVal = Math.max(1, Math.min(3600, isNaN(intervalVal) ? 60 : intervalVal));
+        lengthVal = Math.max(1, Math.min(1000, isNaN(lengthVal) ? 15 : lengthVal));
+        departVal = Math.max(0, Math.min(100, isNaN(departVal) ? 50 : departVal));
+        // copy into (or create) the hidden canonical inputs so other code reads them
+        let intervalSrc = document.getElementById('gpIntervalSec');
+        let lengthSrc = document.getElementById('gpLength');
+        let departSrc = document.getElementById('gpDepartProb');
+        if (!intervalSrc) {
+          intervalSrc = document.createElement('input'); intervalSrc.type='hidden'; intervalSrc.id='gpIntervalSec'; document.body.appendChild(intervalSrc);
+        }
+        if (!lengthSrc) {
+          lengthSrc = document.createElement('input'); lengthSrc.type='hidden'; lengthSrc.id='gpLength'; document.body.appendChild(lengthSrc);
+        }
+        if (!departSrc) {
+          departSrc = document.createElement('input'); departSrc.type='hidden'; departSrc.id='gpDepartProb'; document.body.appendChild(departSrc);
+        }
+        intervalSrc.value = String(intervalVal);
+        lengthSrc.value = String(lengthVal);
+        departSrc.value = String(departVal);
+  // persist traffic mix choice
+  let mixSrc = document.getElementById('gpTrafficMix');
+  if (!mixSrc) { mixSrc = document.createElement('input'); mixSrc.type='hidden'; mixSrc.id='gpTrafficMix'; document.body.appendChild(mixSrc); }
+  mixSrc.value = mMix ? String(mMix.value) : 'mixed';
+        gpModal.style.display = 'none';
+        // start the main ground practice runner
+        startGroundPractice();
+      } catch(e) { console.error('Error confirming GP modal', e); gpModal.style.display='none'; }
+    });
+  } catch(e) { console.error('Modal wiring failed', e); }
+
+  // Arrival Practice runner state
+  let arrivalPracticeInterval = null;
+  let arrivalPracticeRemaining = 0;
+  let arrivalPracticeCounter = 0;
+
+  function ensureArrivalPracticeList(){
+    try {
+      if (!spokenBox) return null;
+      let ol = spokenBox.querySelector('#arrivalPracticeList');
+      if (!ol){
+        spokenBox.classList.remove('hidden');
+        // preserve existing content title if present
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '8px';
+        title.textContent = 'Arrival Practice — Log';
+        spokenBox.innerHTML = '';
+        spokenBox.appendChild(title);
+        ol = document.createElement('ol');
+        ol.id = 'arrivalPracticeList';
+        ol.style.maxHeight = '40vh';
+        ol.style.overflow = 'auto';
+        spokenBox.appendChild(ol);
+      }
+      return ol;
+    } catch(e){ return null; }
+  }
+
+  // Weighted type picker for Arrival Practice (reads modal_apTrafficMix)
+  function weightedArrivalTypeKey(){
+    const smallOrTwin = new Set([].concat(SMALL_ENGINE_TYPES, TWIN_JET_TYPES));
+    const keys = Object.keys(CALLSIGNS_BY_TYPE);
+    const weighted = [];
+    // read user-selected traffic mix from arrival modal hidden/canonical input
+    let mix = 'mixed';
+    try { const mixEl = document.getElementById('apTrafficMix'); if (mixEl) mix = mixEl.value; else { const m = document.getElementById('modal_apTrafficMix'); if (m) mix = m.value; } } catch(e){}
+    for (const k of keys){
+      let w = 1;
+      if (mix === 'mostly_ga') {
+        if (smallOrTwin.has(k)) w = 8;
+        else if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 0.3;
+        else w = 1;
+      } else if (mix === 'mostly_carriers') {
+        if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 5;
+        else if (smallOrTwin.has(k)) w = 1;
+        else w = 1;
+      } else {
+        if (smallOrTwin.has(k)) w = 6;
+        else if (k.startsWith('H_') || ['B737','B757','B767','B777','A320','A340','H_B747','H_B767','H_B777','MD81','MD11'].includes(k)) w = 0.6;
+        else w = 1;
+      }
+      const times = Math.max(1, Math.round(w));
+      for (let i=0;i<times;i++) weighted.push(k);
+    }
+    if (weighted.length === 0) return randomTypeKey();
+    return weighted[Math.floor(Math.random()*weighted.length)];
+  }
+
+  function generateAndShowArrivalTransmission(){
+    try {
+      // choose location and callsign using same rules as Arrival (Tower)
+      const location = choice(TOWER_LOCATIONS);
+      // airline-style regex and N presence requirements
+      const airlineRegex = /^[A-Z]{2,3}[0-9]/i;
+      const hasN = c => (typeof c === 'string') && c.toUpperCase().includes('N');
+      let callsign;
+      if (location === 'Woody'){
+        let airlineCandidates = CALLSIGNS_ALL.filter(c => airlineRegex.test(c));
+        airlineCandidates = airlineCandidates.filter(hasN);
+        if (airlineCandidates.length) callsign = airlineCandidates[Math.floor(Math.random()*airlineCandidates.length)];
+        else { const nCandidates = CALLSIGNS_ALL.filter(hasN); callsign = nCandidates.length ? nCandidates[Math.floor(Math.random()*nCandidates.length)] : randomCallsign(); }
+      } else {
+        let nonAirline = CALLSIGNS_ALL.filter(c => !airlineRegex.test(c));
+        nonAirline = nonAirline.filter(hasN);
+        if (nonAirline.length) callsign = nonAirline[Math.floor(Math.random()*nonAirline.length)];
+        else { const nCandidates = CALLSIGNS_ALL.filter(hasN); callsign = nCandidates.length ? nCandidates[Math.floor(Math.random()*nCandidates.length)] : randomCallsign(); }
+      }
+
+      const rawTypeKey = getRawTypeKey(callsign);
+      const phonetic = phoneticCallsign(callsign);
+      let phoneticSpoken = phonetic;
+      try {
+        const up = callsign.toUpperCase();
+        const mm = up.match(/^N([A-Z0-9]+)$/);
+        if (mm && rawTypeKey && MANUFACTURER_MAP[rawTypeKey]){
+          const tail = mm[1];
+          const manu = MANUFACTURER_MAP[rawTypeKey];
+          const tailSpoken = tail.split('').map(ch => (/[0-9]/.test(ch)? digitWord(ch) : (NATO[ch]||ch))).join(' ');
+          phoneticSpoken = `${manu} ${tailSpoken}`;
+        } else {
+          phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic;
+        }
+      } catch(e){ phoneticSpoken = (rawTypeKey && rawTypeKey.startsWith('H')) ? (phonetic + ' heavy') : phonetic; }
+
+      const phoneticLetter = randomNatoLetter();
+      const speechText = TOWER_ARRIVAL_TEMPLATE.replace('{callsign}', phoneticSpoken).replace('{location}', location).replace('{phoneticLetter}', NATO[phoneticLetter] || phoneticLetter);
+
+      // append to arrival practice list
+      const ol = ensureArrivalPracticeList();
+      if (ol){ arrivalPracticeCounter++; const li = document.createElement('li'); li.textContent = `Arrival Practice — ${callsign} at ${location}` + (rawTypeKey ? ` — ${getTypeForCallsign(callsign) || rawTypeKey}` : ''); ol.appendChild(li); ol.scrollTop = ol.scrollHeight; }
+
+      if (supportsSpeech()) speakText(speechText, 'Arrival Practice — Tower arrival');
+      status.textContent = `Arrival Practice: ${callsign} at ${location}`;
+    } catch(err){ console.error('generateAndShowArrivalTransmission error', err); status.textContent = 'Error during Arrival Practice iteration — see console.'; }
+  }
+
+  function startArrivalPractice(){
+    if (arrivalPracticeInterval) { status.textContent = 'Arrival Practice already running.'; return; }
+    const lengthEl = document.getElementById('apLength');
+    const intervalSecEl = document.getElementById('apIntervalSec');
+    const sessionLength = lengthEl ? Math.max(1, Math.min(1000, Number(lengthEl.value) || 15)) : 15;
+    const intervalSec = intervalSecEl ? Math.max(1, Number(intervalSecEl.value) || 60) : 60;
+    arrivalPracticeRemaining = sessionLength;
+    arrivalPracticeCounter = 0;
+    generateAndShowArrivalTransmission();
+    arrivalPracticeRemaining--;
+    arrivalPracticeInterval = setInterval(() => {
+      if (arrivalPracticeRemaining <= 0){ clearInterval(arrivalPracticeInterval); arrivalPracticeInterval = null; status.textContent = 'Arrival Practice finished.'; try{ arrivalPracticeBtn && (arrivalPracticeBtn.textContent = 'Arrival Practice'); }catch(e){}; return; }
+      generateAndShowArrivalTransmission(); arrivalPracticeRemaining--; status.textContent = `Arrival Practice running — ${arrivalPracticeRemaining} remaining.`;
+    }, Math.max(1000, Math.floor(intervalSec) * 1000));
+    try{ arrivalPracticeBtn && (arrivalPracticeBtn.textContent = 'Arrival Practice — Running'); }catch(e){}
+    status.textContent = 'Arrival Practice started.';
+  }
+
+  function stopArrivalPractice(){ if (arrivalPracticeInterval){ clearInterval(arrivalPracticeInterval); arrivalPracticeInterval = null; } arrivalPracticeRemaining = 0; try{ arrivalPracticeBtn && (arrivalPracticeBtn.textContent = 'Arrival Practice'); }catch(e){}; status.textContent = 'Arrival Practice stopped.'; }
+
+  // Expose for console/testing
+  try { window.startArrivalPractice = startArrivalPractice; window.stopArrivalPractice = stopArrivalPractice; } catch(e){}
+
+  // Wire Arrival Practice modal & button
+  try {
+    const arrivalPracticeBtnEl = document.getElementById('arrivalPracticeBtn');
+    const apModal = document.getElementById('apModal');
+    const apConfirmBtn = document.getElementById('apConfirmBtn');
+    const apCancelBtn = document.getElementById('apCancelBtn');
+    if (arrivalPracticeBtnEl && apModal){
+      arrivalPracticeBtnEl.addEventListener('click', () => {
+        if (arrivalPracticeInterval) { stopArrivalPractice(); return; }
+        // prefill modal from hidden inputs if present
+        try{
+          const hidInt = document.getElementById('apIntervalSec');
+          const hidLen = document.getElementById('apLength');
+          const mInt = document.getElementById('modal_apIntervalSec');
+          const mLen = document.getElementById('modal_apLength');
+          if (mInt) mInt.value = hidInt ? hidInt.value : (mInt.value || 60);
+          if (mLen) mLen.value = hidLen ? hidLen.value : (mLen.value || 15);
+        }catch(e){}
+        apModal.style.display = 'flex';
+      });
+    }
+    if (apCancelBtn && apModal) apCancelBtn.addEventListener('click', () => { apModal.style.display = 'none'; status.textContent = 'Arrival Practice canceled.'; });
+    if (apConfirmBtn && apModal) apConfirmBtn.addEventListener('click', () => {
+      try {
+        const mInterval = document.getElementById('modal_apIntervalSec');
+        const mLength = document.getElementById('modal_apLength');
+        const mMix = document.getElementById('modal_apTrafficMix');
+        let intervalVal = mInterval ? Number(mInterval.value) : 60;
+        let lengthVal = mLength ? Number(mLength.value) : 15;
+        intervalVal = Math.max(1, Math.min(3600, isNaN(intervalVal) ? 60 : intervalVal));
+        lengthVal = Math.max(1, Math.min(1000, isNaN(lengthVal) ? 15 : lengthVal));
+        let intervalSrc = document.getElementById('apIntervalSec');
+        let lengthSrc = document.getElementById('apLength');
+        if (!intervalSrc){ intervalSrc = document.createElement('input'); intervalSrc.type='hidden'; intervalSrc.id='apIntervalSec'; document.body.appendChild(intervalSrc); }
+        if (!lengthSrc){ lengthSrc = document.createElement('input'); lengthSrc.type='hidden'; lengthSrc.id='apLength'; document.body.appendChild(lengthSrc); }
+        intervalSrc.value = String(intervalVal); lengthSrc.value = String(lengthVal);
+        // persist traffic mix as hidden canonical input
+        let mixSrc = document.getElementById('apTrafficMix'); if (!mixSrc){ mixSrc = document.createElement('input'); mixSrc.type='hidden'; mixSrc.id='apTrafficMix'; document.body.appendChild(mixSrc); }
+        mixSrc.value = mMix ? String(mMix.value) : 'mixed';
+        apModal.style.display = 'none';
+        startArrivalPractice();
+      } catch(e){ console.error('AP confirm error', e); apModal.style.display='none'; }
+    });
+  } catch(e){ console.error('Arrival Practice wiring failed', e); }
+
+  if (stopGroundBtn) {
+    stopGroundBtn.addEventListener('click', () => {
+      if (groundPracticeInterval) clearInterval(groundPracticeInterval);
+      groundPracticeInterval = null;
+      groundPracticeRemaining = 0;
+      speechSynthesis.cancel();
+      status.textContent = 'Ground Practice stopped.';
+    });
+  }
+
+    stopBtn.addEventListener('click', () => {
+      if (!supportsSpeech()) return;
+      speechSynthesis.cancel();
+      currentUtterance = null;
+      status.textContent = 'Stopped.';
+    });
+
+    // Friendly initial status
+  if (supportsSpeech()) status.textContent = '';
+
+    // spoken box toggle behavior (starts hidden)
+      if (spokenBox) {
+        // clicking the spoken box hides it, but does NOT affect the Show button
+        spokenBox.addEventListener('click', () => {
+          spokenBox.classList.add('hidden');
+        });
+      }
+      if (showTextBtn) {
+        // clicking the Show button toggles the spoken box but the Show button remains visible
+        showTextBtn.addEventListener('click', () => {
+          if (!spokenBox) return;
+          spokenBox.classList.toggle('hidden');
+        });
+      }
+  </script>
+</body>
+</html>
