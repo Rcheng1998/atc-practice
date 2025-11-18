@@ -325,30 +325,61 @@
       const voices = speechSynthesis.getVoices() || [];
       preferredVoiceIndices = [];
       
-      // On mobile, prefer a single male English voice for consistency
+      // On mobile, prefer a single natural-sounding male English voice for consistency
       if (isMobile && voices.length) {
         let maleVoice = null;
         
-        // For iOS, look for male English voices (Alex is typically male)
+        // For iOS, prioritize natural-sounding male voices
         if (isIOS) {
-          maleVoice = voices.find(v => 
-            v.lang.startsWith('en') && 
-            (v.name.includes('Alex') || (v.localService && !v.name.includes('Samantha')))
-          );
-          // Fallback to any English voice if no male found
+          // Try premium/natural voices first
+          const naturalMaleVoices = ['Daniel', 'Aaron', 'Arthur', 'Fred', 'Thomas'];
+          for (const voiceName of naturalMaleVoices) {
+            maleVoice = voices.find(v => 
+              v.lang.startsWith('en') && 
+              v.name.includes(voiceName)
+            );
+            if (maleVoice) break;
+          }
+          
+          // Fallback to Alex if no premium voices found
           if (!maleVoice) {
-            maleVoice = voices.find(v => v.lang.startsWith('en') && v.localService);
+            maleVoice = voices.find(v => 
+              v.lang.startsWith('en') && 
+              v.name.includes('Alex')
+            );
+          }
+          
+          // Last resort: any local English voice that's not Samantha
+          if (!maleVoice) {
+            maleVoice = voices.find(v => 
+              v.lang.startsWith('en') && 
+              v.localService && 
+              !v.name.includes('Samantha')
+            );
           }
         }
-        // For Android, prefer male English voices
+        // For Android, prefer natural male English voices
         else {
-          maleVoice = voices.find(v => 
-            v.localService && 
-            v.lang.startsWith('en') && 
-            (v.name.toLowerCase().includes('male') || 
-             !v.name.toLowerCase().includes('female'))
-          );
-          // Fallback to any local English voice
+          // Try Google's enhanced voices first
+          const androidNaturalVoices = ['en-us-x-sfg', 'en-us-x-tpd', 'en-us-x-iog', 'en-gb-x-gba'];
+          for (const voiceName of androidNaturalVoices) {
+            maleVoice = voices.find(v => 
+              v.name.toLowerCase().includes(voiceName) ||
+              (v.lang.startsWith('en') && v.name.toLowerCase().includes('male'))
+            );
+            if (maleVoice) break;
+          }
+          
+          // Fallback to any local male voice
+          if (!maleVoice) {
+            maleVoice = voices.find(v => 
+              v.localService && 
+              v.lang.startsWith('en') && 
+              !v.name.toLowerCase().includes('female')
+            );
+          }
+          
+          // Last resort: any local English voice
           if (!maleVoice) {
             maleVoice = voices.find(v => v.localService && v.lang.startsWith('en'));
           }
